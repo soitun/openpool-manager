@@ -48,7 +48,6 @@ func (p *APIPlugin) Start() {
 	logServer := p.logger.WithField("port", p.portNumber)
 
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		// Log request at debug level, including request method and path
 		logServer.WithFields(log.Fields{
 			"method": r.Method,
 			"path":   r.URL.Path,
@@ -99,25 +98,13 @@ func (p *APIPlugin) Start() {
 
 		w.Header().Set("Content-Type", "application/json")
 
-		//TODO: Basic check only makes sure they are filtered,NEED iNPUT CRITIERA To do a proper search...(job type, model, pipeline>??)
-		// Check for the `filtered` query parameter
-		query := r.URL.Query()
-		filtered := query.Get("filtered") == "true"
-
-		logServer.WithField("filtered", filtered).Debug("Query param parsed")
-
 		var workers []models.Worker
 		var err error
 
-		if filtered {
-			workers, err = p.store.GetFilteredWorkers()
-		} else {
-			workers, err = p.store.GetWorkers()
-		}
+		workers, err = p.store.GetWorkers()
 
 		if err != nil {
 			logServer.WithError(err).Error("Failed to retrieve workers")
-			// Handle the error properly by returning a 500 response with a meaningful message
 			http.Error(w, fmt.Sprintf(`{"error": "failed to retrieve workers: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -126,7 +113,79 @@ func (p *APIPlugin) Start() {
 		}
 	})
 
-	// Start the server
+	// /selection/ai/workers now includes "model" and "pipeline" criteria.
+	http.HandleFunc("/selection/ai/workers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+
+		logServer.WithFields(log.Fields{
+			"method": r.Method,
+			"path":   r.URL.Path,
+		}).Debug("Handling /selection/ai/workers request")
+
+		w.Header().Set("Content-Type", "application/json")
+		// Read the query parameters.
+		modelID := r.URL.Query().Get("modelID")
+		pipeline := r.URL.Query().Get("pipeline")
+
+		if modelID == "" || pipeline == "" {
+			http.Error(w, `{"error": "missing query parameters: modelID and pipeline are required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Create the worker selection criteria using the payload values.
+		criteria := models.WorkerCriteria{
+			NodeType: "ai",
+			Region:   p.region,
+			Criteria: map[string]any{
+				"model":    modelID,
+				"pipeline": pipeline,
+			},
+		}
+
+		logServer.WithField("criteria", criteria).Debug("worker selection criteria")
+
+		workers, err := p.store.GetPreferredWorkers(criteria)
+		if err != nil {
+			logServer.WithError(err).Error("Failed to retrieve AI workers")
+			http.Error(w, fmt.Sprintf(`{"error": "failed to retrieve workers: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(workers); err != nil {
+			logServer.WithError(err).Warn("Failed to encode /selection/ai/workers response")
+		}
+	})
+
+	// /selection/transcode/workers uses no additional criteria.
+	http.HandleFunc("/selection/transcode/workers", func(w http.ResponseWriter, r *http.Request) {
+		logServer.WithFields(log.Fields{
+			"method": r.Method,
+			"path":   r.URL.Path,
+		}).Debug("Handling /selection/transcode/workers request")
+
+		w.Header().Set("Content-Type", "application/json")
+
+		criteria := models.WorkerCriteria{
+			NodeType: "transcode",
+			Region:   p.region,
+			Criteria: map[string]any{}, // No additional filtering criteria
+		}
+		logServer.WithField("criteria", criteria).Debug("worker selection criteria")
+		workers, err := p.store.GetPreferredWorkers(criteria)
+		if err != nil {
+			logServer.WithError(err).Error("Failed to retrieve transcode workers")
+			http.Error(w, fmt.Sprintf(`{"error": "failed to retrieve workers: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(workers); err != nil {
+			logServer.WithError(err).Warn("Failed to encode /selection/transcode/workers response")
+		}
+	})
+
+	// Start the HTTP server
 	portStr := ":" + strconv.Itoa(p.portNumber)
 	logServer.WithField("address", portStr).Info("Starting API server")
 	if err := http.ListenAndServe(portStr, nil); err != nil {

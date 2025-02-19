@@ -70,8 +70,8 @@ func (s *InMemoryStorage) GetWorkers() ([]models.Worker, error) {
 	return workers, nil
 }
 
-// GetWorkers retrieves online workers stored in-memory.
-func (s *InMemoryStorage) GetFilteredWorkers() ([]models.Worker, error) {
+// GetPreferredWorkers retrieves online workers stored in-memory.
+func (s *InMemoryStorage) GetPreferredWorkers(criteria models.PreferredWorkerCriteria) ([]models.Worker, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

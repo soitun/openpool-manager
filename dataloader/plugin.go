@@ -284,6 +284,22 @@ func (p *DataLoaderPlugin) fetchAndStoreEvents(nodeType, endpoint string, wg *sy
 					delete(p.receivedJobs, payload.RequestID)
 				}
 				p.mu.Unlock()
+
+				//// Also capture worker connection details from job-processed data.
+				//wcd := internal.WorkerJobDetails{
+				//	EthAddress:   payload.EthAddress,
+				//	NodeType:     payload.NodeType,
+				//	Model:        payload.ModelID,
+				//	Pipeline:     payload.Pipeline,
+				//	ResponseTime: payload.ResponseTime,
+				//	Region:       p.region,
+				//}
+				//if err := p.store.UpdateWorkerJobDetails(wcd); err != nil {
+				//	fetchLogger.WithFields(log.Fields{
+				//		"eventID":    raw.ID,
+				//		"workerAddr": payload.EthAddress,
+				//	}).WithError(err).Error("Failed to update worker connection details from job-processed")
+				//}
 			}
 			if err := p.store.AddPendingFees(payload.EthAddress, feeAfterCommission, p.region, nodeType); err != nil {
 				fetchLogger.WithFields(log.Fields{

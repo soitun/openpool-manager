@@ -88,13 +88,15 @@ func (s *SqliteStoragePlugin) GetLastEventTimestamp() (time.Time, error) {
 	s.logger.WithField("lastEventTime", lastTime).Debug("Fetched last event timestamp")
 	return lastTime, nil
 }
-func (s *SqliteStoragePlugin) GetFilteredWorkers() ([]models.Worker, error) {
-	s.logger.Debug("Retrieving filtered workers (is_connected = true)")
+func (s *SqliteStoragePlugin) GetPreferredWorkers(criteria models.PreferredWorkerCriteria) ([]models.Worker, error) {
+	s.logger.WithFields(log.Fields{
+		"Criteria": criteria,
+	}).Debug("Retrieving preferred workers")
 
 	//TODO: Basic check only makes sure they are online, need to add performance based checks here.... NEED iNPUT CRITIERA TOO
 	var remoteWorkers []*internal.RemoteWorker
 	if err := s.db.Find(&remoteWorkers).Where("is_connected = ?", true).Error; err != nil {
-		s.logger.WithError(err).Error("Failed to fetch filtered workers")
+		s.logger.WithError(err).Error("Failed to fetch preferred workers")
 		return nil, err
 	}
 
@@ -156,6 +158,47 @@ func (s *SqliteStoragePlugin) UpdateWorkerStatus(ethAddress string, connected bo
 	return nil
 }
 
+//	func (s *SqliteStoragePlugin) UpdateWorkerJobDetails(jobDetails models.WorkerJobDetails) error {
+//		ethAddress := jobDetails.GetWorkerID()
+//		region := jobDetails.GetRegion()
+//		nodeType := jobDetails.GetNodeType()
+//		responseTime := jobDetails.GetResponseTime()
+//		s.logger.WithFields(log.Fields{
+//			"workerID": ethAddress,
+//			"region":   region,
+//			"nodeType": nodeType,
+//		}).Debug("Creating worker job details")
+//
+//		if ext, ok := jobDetails.(internal.WorkerJobDetails); ok {
+//			s.logger.WithFields(log.Fields{
+//				"workerID": ethAddress,
+//				"model":    ext.Model,
+//				"pipeline": ext.Pipeline,
+//				"warm":     ext.Warm,
+//			}).Debug("Found AI worker job details; updating AI job details")
+//
+//			aiDetails := internal.WorkerJobDetails{
+//				EthAddress:   ethAddress,
+//				NodeType:     nodeType,
+//				Region:       region,
+//				Model:        ext.Model,
+//				Pipeline:     ext.Pipeline,
+//				Warm:         ext.Warm,
+//				ResponseTime: responseTime,
+//			}
+//			if err := s.db.Create(&aiDetails).Error; err != nil {
+//				s.logger.WithError(err).Error("Failed to create new ai worker job details")
+//				return err
+//			}
+//		} else {
+//			if err := s.db.Create(&jobDetails).Error; err != nil {
+//				s.logger.WithError(err).Error("Failed to create new worker job details")
+//				return err
+//			}
+//		}
+//
+//		return nil
+//	}
 func (s *SqliteStoragePlugin) ResetWorkersOnlineStatus(region string, nodeType string) error {
 	s.logger.WithFields(log.Fields{
 		"region":   region,
@@ -204,7 +247,7 @@ func (s *SqliteStoragePlugin) AddPendingFees(ethAddress string, amount int64, re
 	return nil
 }
 
-// RecordPayout stores a payout.
+// AddPaidFees stores a payout.
 func (s *SqliteStoragePlugin) AddPaidFees(ethAddress string, amount int64, txHash string, region string, nodeType string) error {
 	s.logger.WithFields(log.Fields{
 		"ethAddress": ethAddress,

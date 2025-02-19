@@ -55,3 +55,30 @@ func (rw RemoteWorker) GetNodeType() string {
 func (rw RemoteWorker) GetRegion() string {
 	return rw.Region
 }
+
+//type WorkerJobDetails struct {
+//	EthAddress   string `json:"ethAddress"`
+//	NodeType     string `json:"nodeType"`
+//	Region       string `json:"region"`
+//	Model        string `json:"model"`
+//	Pipeline     string `json:"pipeline"`
+//	Warm         bool   `json:"warm"`
+//	ResponseTime int64  `json:"responseTime"`
+//	UpdatedAt    int64  `json:"updatedAt"` // Unix timestamp
+//}
+//
+//func (c WorkerJobDetails) GetNodeType() string {
+//	return c.NodeType
+//}
+//
+//func (c WorkerJobDetails) GetRegion() string {
+//	return c.Region
+//}
+//
+//func (c WorkerJobDetails) GetResponseTime() int64 {
+//	return c.ResponseTime
+//}
+//
+//func (c WorkerJobDetails) GetWorkerID() string {
+//	return c.EthAddress
+//}

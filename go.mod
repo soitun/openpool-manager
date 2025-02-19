@@ -3,7 +3,7 @@ module github.com/Livepeer-Open-Pool/openpool-manager
 go 1.23.2
 
 require (
-	github.com/Livepeer-Open-Pool/openpool-plugin v0.0.5
+	github.com/Livepeer-Open-Pool/openpool-plugin v0.0.6
 	github.com/ethereum/go-ethereum v1.15.1
 	github.com/sirupsen/logrus v1.9.3
 	gorm.io/driver/sqlite v1.5.7
