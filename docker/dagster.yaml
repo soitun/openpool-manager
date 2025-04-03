@@ -1,0 +1,96 @@
+# Configures how long Dagster keeps sensor / schedule tick data
+retention:
+  schedule:
+    purge_after_days: 90 # sets retention policy for schedule ticks of all types
+  sensor:
+    purge_after_days:
+      skipped: 7
+      failure: 30
+      success: -1 # keep success ticks indefinitely
+# Allows opting out of Dagster collecting usage statistics.
+telemetry:
+  enabled: false
+
+scheduler:
+  module: dagster.core.scheduler
+  class: DagsterDaemonScheduler
+
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 10
+
+run_launcher:
+  module: dagster_docker
+  class: DockerRunLauncher
+  config:
+    env_vars:
+      - DAGSTER_POSTGRES_USER
+      - DAGSTER_POSTGRES_PASSWORD
+      - DAGSTER_POSTGRES_DB
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - S3_BUCKET
+      - S3_METRICS_BUCKET
+      - S3_ENDPOINT
+      - AWS_REGION
+      - PAYMENT_THRESHOLD_WEI
+      - MIN_PAYMENT_INTERVAL_SECONDS
+      - PAYMENT_PROCESSING_DRY_RUN
+      - POOL_COMMISSION_RATE
+      - MAX_FILES_PER_BATCH
+      - S3_SENSOR_INTERVAL_SECONDS
+      - PAYMENT_SENSOR_INTERVAL_SECONDS
+      - IO_MANAGER_BASE_DIR
+      - PAYMENT_OUTPUT_DIR
+    network: ingress
+    container_kwargs:
+      volumes:
+#        - /run/user/1000/docker.sock:/var/run/docker.sock
+        - /var/run/docker.sock:/var/run/docker.sock
+        - open-pool-mgmt-data:/pool
+      auto_remove: true
+
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_db:
+      hostname: dagster-postgres
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_db:
+      hostname: dagster-postgres
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_db:
+      hostname: dagster-postgres
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
