@@ -1,0 +1,112 @@
+services:
+  # Dagster Webserver (UI)
+  dagster-webserver:
+    image: open-pool-dagster-webserver:latest
+    container_name: dagster-webserver
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+    # ports:
+    #   - "3000:3000"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - POSTGRES_HOST=dagster-postgres
+      - POSTGRES_PORT=5432
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_POSTGRES_USER=postgres
+      - DAGSTER_POSTGRES_PASSWORD=postgres
+      - DAGSTER_POSTGRES_DB=postgres
+      - DAGSTER_POSTGRES_HOST=dagster-postgres
+      - DOCKER_NETWORK=open-pool-network
+      - DOCKER_VOLUME=open-pool-mgmt-data
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      openpool_management-code-server:
+        condition: service_started
+    restart: no
+
+  # Dagster Daemon (background process to run schedules, sensors)
+  dagster-daemon:
+    image: open-pool-dagster-daemon:latest
+    container_name: dagster-daemon
+    command: ["dagster-daemon", "run"]
+    environment:
+      - AWS_ACCESS_KEY_ID=YOUR_VALUE_HERE
+      - AWS_SECRET_ACCESS_KEY=YOUR_VALUE_HERE
+      - S3_BUCKET=open-pool-events
+      - S3_METRICS_BUCKET=open-pool-metrics
+      - S3_ENDPOINT=http://minio:9000/
+      - AWS_REGION=us-east-1
+      - PAYMENT_THRESHOLD_WEI=10000000000000000
+      - MIN_PAYMENT_INTERVAL_SECONDS=86400
+      - PAYMENT_PROCESSING_DRY_RUN=false
+      - POOL_COMMISSION_RATE=0.25
+      - MAX_FILES_PER_BATCH=250
+      - MAX_CONCURRENT_PROCESSES=5
+      - S3_SENSOR_INTERVAL_SECONDS=120
+      - PAYMENT_SENSOR_INTERVAL_SECONDS=3600
+      - IO_MANAGER_BASE_DIR=/pool/data
+      - PAYMENT_OUTPUT_DIR=/pool/payments
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - POSTGRES_HOST=dagster-postgres
+      - POSTGRES_PORT=5432
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_POSTGRES_USER=postgres
+      - DAGSTER_POSTGRES_PASSWORD=postgres
+      - DAGSTER_POSTGRES_DB=postgres
+      - DAGSTER_POSTGRES_HOST=dagster-postgres
+      - DOCKER_NETWORK=open-pool-network
+      - DOCKER_VOLUME=open-pool-mgmt-data
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      openpool_management-code-server:
+        condition: service_started
+
+  # Dagster Code Server
+  openpool_management-code-server:
+    image: open-pool-mgmt:latest
+    container_name: openpool_management-code-server
+    command: ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000","-f","openpool_management/definitions.py"]
+    restart: no
+    environment:
+      - DAGSTER_CURRENT_IMAGE=open-pool-mgmt:latest
+      - AWS_ACCESS_KEY_ID=YOUR_VALUE_HERE
+      - AWS_SECRET_ACCESS_KEY=YOUR_VALUE_HERE
+      - S3_BUCKET=open-pool-events
+      - S3_METRICS_BUCKET=open-pool-metrics
+      - S3_ENDPOINT=http://minio:9000/
+      - AWS_REGION=us-east-1
+      - PAYMENT_THRESHOLD_WEI=10000000000000000
+      - MIN_PAYMENT_INTERVAL_SECONDS=86400
+      - PAYMENT_PROCESSING_DRY_RUN=false
+      - POOL_COMMISSION_RATE=0.25
+      - MAX_FILES_PER_BATCH=250
+      - MAX_CONCURRENT_PROCESSES=5
+      - S3_SENSOR_INTERVAL_SECONDS=120
+      - PAYMENT_SENSOR_INTERVAL_SECONDS=3600
+      - IO_MANAGER_BASE_DIR=/pool/data
+      - PAYMENT_OUTPUT_DIR=/pool/payments
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - POSTGRES_HOST=dagster-postgres
+      - POSTGRES_PORT=5432
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_POSTGRES_USER=postgres
+      - DAGSTER_POSTGRES_PASSWORD=postgres
+      - DAGSTER_POSTGRES_DB=postgres
+      - DAGSTER_POSTGRES_HOST=dagster-postgres
+      - DOCKER_NETWORK=open-pool-network
+      - DOCKER_VOLUME=open-pool-mgmt-data
+volumes:
+  open-pool-mgmt-data:
+#    external: true
+
+networks:
+  default:
+    name: open-pool-network
+#    external: true

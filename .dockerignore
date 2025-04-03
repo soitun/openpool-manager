@@ -1,0 +1,12 @@
+payments/
+data/
+openpool-venv/
+build/
+dev_daghome/
+**-keys/
+.tmp*
+*.env
+docker/docker-compose.yml
+docker/Dockerfile.dagster
+docker/Dockerfile.user_code
+.idea/
