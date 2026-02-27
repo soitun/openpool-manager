@@ -6,41 +6,19 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ## CRITICAL — Data Loss / Financial Risk
 
-### 1. `process_inbound_events_job` uses `AssetSelection.all()` — triggers payments on every S3 ingest
+### 1. ~~`process_inbound_events_job` uses `AssetSelection.all()` — triggers payments on every S3 ingest~~ FIXED
 
-**File:** `openpool_management/jobs.py:5-11`
+**Status:** FIXED — `jobs.py` now excludes `worker_payments`, `worker_summary_analytics`, and `worker_summary_s3` from `process_inbound_events_job`. Payments only trigger via `worker_payment_sensor` → `worker_payment_job`.
 
-The S3 sensor triggers `process_inbound_events`, which selects **all** assets. This means every 5-minute S3 batch materializes `worker_payments`, potentially sending real ETH transactions on every ingest cycle — not just when the payment sensor fires every 4 hours. The payment sensor (`worker_payment_sensor`) is effectively redundant when this job path is active.
-
-**Impact:** Unintended payment execution on every ingest run. Payments should only be triggered deliberately.
-
-**Fix:** Change `process_inbound_events_job` to explicitly select only the ingest/transform/tracking/analytics assets, excluding `worker_payments`:
-
-```python
-process_inbound_events_job = define_asset_job(
-    name="process_inbound_events",
-    selection=AssetSelection.all()
-        - AssetSelection.keys(AssetKey(["worker", "worker_payments"])),
-    ...
-)
-```
-
-Or enumerate the intended assets explicitly.
+**File:** `openpool_management/jobs.py`
 
 ---
 
-### 2. Sensor cursor advances before the run succeeds
+### 2. ~~Sensor cursor advances before the run succeeds~~ FIXED
 
-**File:** `openpool_management/sensors.py:170-171, 180-181`
+**Status:** FIXED — `sensors.py` rewritten with a two-phase cursor. Phase 1 reconciles pending runs (promotes cursor only on SUCCESS, resets on FAILURE). Phase 2 scans for new files and sets pending state without advancing the cursor. S3 archival (Fix 5) also integrated into Phase 1 on success.
 
-The `s3_event_sensor` updates `cursor_data` immediately after yielding each `RunRequest` (line 171), then persists the cursor at line 181. If the triggered run **fails** (S3 timeout, processing error, OOM, etc.), the cursor has already moved past those S3 keys. Those files will never be retried.
-
-**Impact:** Permanent data loss — S3 event files are skipped silently on run failure.
-
-**Fix:** Do not advance the cursor optimistically. Instead:
-- Option A: Use Dagster's built-in cursor semantics — only update the cursor **after** confirming the run completed successfully (requires a separate sensor tick or callback).
-- Option B: Track "in-flight" keys separately from "confirmed" keys. Only promote in-flight keys to confirmed after the run succeeds.
-- Option C: Use `context.instance.get_runs()` to check if the *previous* run for a partition succeeded before advancing the cursor for that partition.
+**File:** `openpool_management/sensors.py`
 
 ---
 
@@ -66,20 +44,11 @@ for event in new_events:
 
 ---
 
-### 4. No idempotency on blockchain payments
+### 4. ~~No idempotency on blockchain payments~~ FIXED
 
-**File:** `openpool_management/assets/payment.py:159-167`
+**Status:** FIXED — `payment.py` now implements a write-ahead log (WAL). Each payment writes a "pending" entry before `send_eth()` and a result entry after. On startup, `_reconcile_wal()` credits completed payments and flags ambiguous pending entries (crash during send) as `_wal_needs_investigation`, skipping those workers with a CRITICAL log.
 
-If `send_eth()` succeeds on-chain but the process crashes before `handle_output` persists the updated `payment_states`, the next run will see the same `unpaid_fees` and send the payment **again**. There is no transaction log or idempotency key checked before sending.
-
-The `payments/*.json` files written at line 265 are local-only, write-only, and not consulted before paying.
-
-**Impact:** Double (or multiple) payments to workers. Real ETH lost.
-
-**Fix:** Implement a pre-payment idempotency check:
-1. Before each `send_eth()`, write a pending payment record to a durable store (S3 or a local WAL file) keyed by `(eth_address, partition, payment_id)`.
-2. On startup, check for pending records. If a pending record exists, query the chain for the transaction hash before re-sending.
-3. Alternatively, persist payment state incrementally after each successful `send_eth()` rather than batching all at the end.
+**File:** `openpool_management/assets/payment.py`
 
 ---
 
@@ -119,39 +88,19 @@ It works only because the IO manager reads just `.asset_key` and `.partition_key
 
 ---
 
-### 7. `pd.DataFrame()` reference in IO manager without pandas import
+### 7. ~~`pd.DataFrame()` reference in IO manager without pandas import~~ FIXED
 
-**File:** `openpool_management/io_manager.py:93-98`
+**Status:** FIXED — `io_manager.py` now returns `None` for `transcode_performance` and `ai_performance` in the fallback, with a new `_get_empty_fallback` method. `metrics.py` updated with `is not None` guards at all `.empty` call sites.
 
-The `load_input` fallback for `worker_performance_analytics` calls `pd.DataFrame()`, but `pandas` is not imported in `io_manager.py`. This will raise `NameError` if this code path is reached (first-ever materialization of performance analytics, or corrupted pickle file).
-
-**Impact:** Runtime crash on first performance analytics materialization or after data corruption.
-
-**Fix:** Either add `import pandas as pd` to `io_manager.py`, or return a plain dict fallback and let the asset handle the conversion:
-
-```python
-elif "worker_performance_analytics" in asset_key_str:
-    return {
-        "transcode_performance": None,
-        "ai_performance": None,
-        "ai_model_pipeline_rankings": {}
-    }
-```
+**Files:** `openpool_management/io_manager.py`, `openpool_management/assets/metrics.py`
 
 ---
 
-### 8. Payment sensor reads pickle files directly from disk
+### 8. ~~Payment sensor reads pickle files directly from disk~~ PARTIALLY FIXED
 
-**File:** `openpool_management/sensors.py:216-219`
+**Status:** PARTIALLY FIXED — The hardcoded `"data"` path is now read from `IO_MANAGER_BASE_DIR` env var, and `.bak` fallback is added for corrupt pickle recovery. The sensor still reads pickle files directly rather than going through Dagster's materialization API.
 
-`worker_payment_sensor` hardcodes the path `data/worker/worker_payments/{node_type}/{region}/data.pkl` and reads with `pickle.load()`. This is tightly coupled to the IO manager's directory layout.
-
-**Impact:**
-- If `IO_MANAGER_BASE_DIR` env var changes, the sensor silently reads nothing and never triggers payments.
-- If the asset key path changes, same result.
-- Security: unpickling untrusted data (low risk since files are self-written, but violates best practice).
-
-**Fix:** Use Dagster's `AssetSelection` or materialization event API to load the latest materialized value through the IO manager, rather than reading the filesystem directly. Or at minimum, read `IO_MANAGER_BASE_DIR` from the same env var the IO manager uses.
+**File:** `openpool_management/sensors.py`
 
 ---
 
@@ -198,33 +147,11 @@ The `raw_events` asset does not specify `io_manager_key`. It returns `List[RawEv
 
 ---
 
-### 12. No atomic writes in IO manager
+### 12. ~~No atomic writes in IO manager~~ FIXED
 
-**File:** `openpool_management/io_manager.py:65-67`
+**Status:** FIXED — `io_manager.py` `handle_output` now uses `tempfile.mkstemp` + `fsync` + atomic `os.rename`. Existing file is backed up to `.bak` before rename. `load_input` recovers from `.bak` on corrupt primary. Duplicate `os.makedirs` also removed.
 
-`handle_output` writes directly to the final path with `pickle.dump()`. If the process is killed mid-write (OOM, SIGKILL, disk full), the pickle file is corrupted. The next `load_input` will hit the `except` block (line 115) and return an empty fallback — **silently losing all accumulated state** for that partition.
-
-**Impact:** Complete state loss for any asset/partition on interrupted writes. For `worker_fees` or `worker_payments`, this means losing all fee/payment history.
-
-**Fix:** Write to a temporary file in the same directory, then `os.rename()` (atomic on POSIX):
-
-```python
-import tempfile
-
-def handle_output(self, context, obj):
-    path = self._get_path(context)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    # Write to temp file first, then atomically rename
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            pickle.dump(obj, f)
-        os.rename(tmp_path, path)
-    except:
-        os.unlink(tmp_path)
-        raise
-```
+**File:** `openpool_management/io_manager.py`
 
 ---
 
@@ -385,39 +312,60 @@ These files are also never read back by any part of the pipeline — they are wr
 
 ---
 
-### 22. Duplicate `os.makedirs` call in IO manager
+### 22. ~~Duplicate `os.makedirs` call in IO manager~~ FIXED
 
-**File:** `openpool_management/io_manager.py:60, 63`
+**Status:** FIXED — Removed as part of the atomic writes rewrite in `io_manager.py`.
 
-```python
-os.makedirs(os.path.dirname(path), exist_ok=True)  # line 60
-# ...
-os.makedirs(os.path.dirname(path), exist_ok=True)  # line 63
-```
+**File:** `openpool_management/io_manager.py`
 
-**Impact:** Harmless but indicates copy-paste artifact.
+---
 
-**Fix:** Remove the duplicate call.
+## NEW — Added via Pipeline Durability Fixes
+
+### 23. S3 archival on successful processing (ADDED)
+
+**Status:** FIXED — Processed S3 files are archived to a configurable `S3_ARCHIVE_BUCKET` with prefix after the sensor confirms run success. Archival failure is non-blocking. Config wired via `S3Config.archive_bucket` / `S3Config.archive_prefix` and Docker env vars.
+
+**Files:** `openpool_management/configs.py`, `openpool_management/resources.py`, `openpool_management/sensors.py`, `openpool_management/definitions.py`, `docker/dagster.yaml-pre-variables`
 
 ---
 
 ## Summary
 
-| Priority | # | Key Theme |
-|----------|---|-----------|
-| **Critical** | 5 | Data loss, double payments, fee inflation, cursor advancement |
-| **High** | 5 | Correctness bugs, missing imports, fragile state loading |
-| **Medium** | 6 | Resilience, performance, unbounded growth |
-| **Low** | 6 | Dead code, config mismatches, minor bugs |
+| Priority | # | Status | Key Theme |
+|----------|---|--------|-----------|
+| **Critical** | 1 | FIXED | `AssetSelection.all()` triggering payments |
+| **Critical** | 2 | FIXED | Cursor advances before run succeeds |
+| **Critical** | 3 | OPEN | `worker_fees` event deduplication |
+| **Critical** | 4 | FIXED | Payment idempotency (WAL) |
+| **Critical** | 5 | OPEN | Fragile `InputContext` self-loading |
+| **High** | 6 | OPEN | `processed_jobs` inconsistent state loading |
+| **High** | 7 | FIXED | `pd.DataFrame()` NameError in IO manager |
+| **High** | 8 | PARTIAL | Payment sensor hardcoded path (env var fixed, still direct file read) |
+| **High** | 9 | OPEN | `worker_connections` discards disconnected workers |
+| **High** | 10 | OPEN | Hardcoded `valid_combinations` duplication |
+| **Medium** | 11 | OPEN | `raw_events` not persisted by IO manager |
+| **Medium** | 12 | FIXED | Atomic writes in IO manager |
+| **Medium** | 13 | OPEN | S3 client created on every call |
+| **Medium** | 14 | OPEN | `processed_event_ids` unbounded growth |
+| **Medium** | 15 | OPEN | No RPC retry/backoff |
+| **Medium** | 16 | OPEN | Gas price race condition (low risk on Arbitrum) |
+| **Low** | 17 | OPEN | Unused Pydantic models |
+| **Low** | 18 | OPEN | Unused config classes |
+| **Low** | 19 | OPEN | Payment sensor unused `run_config` |
+| **Low** | 20 | OPEN | `active_workers` count inconsistency |
+| **Low** | 21 | OPEN | `payments/` directory not durable |
+| **Low** | 22 | FIXED | Duplicate `os.makedirs` |
+| **New** | 23 | FIXED | S3 archival on success |
 
-### Recommended Fix Order
+### Progress: 7 FIXED, 1 PARTIAL, 15 OPEN
 
-1. **#2** — Cursor advancement (most direct data-loss path)
-2. **#4** — Payment idempotency (financial risk)
-3. **#12** — Atomic writes in IO manager (state corruption risk)
-4. **#1** — `AssetSelection.all()` triggering payments (unintended payments)
-5. **#3** — Event deduplication in `worker_fees` (fee inflation)
-6. **#5/#6** — Fragile self-loading pattern (silent state loss)
-7. **#7** — Missing pandas import (runtime crash)
-8. **#15** — RPC retry logic (resilience)
-9. Everything else
+### Recommended Next Fixes
+
+1. **#3** — Event deduplication in `worker_fees` (CRITICAL — fee inflation → overpayment)
+2. **#5/#6** — Fragile `InputContext` self-loading (CRITICAL/HIGH — silent state loss across 5 assets)
+3. **#13** — Cache S3 boto3 client (MEDIUM — easy win, big perf improvement on 250-file batches)
+4. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
+5. **#9** — Keep disconnected workers in state (HIGH — data continuity)
+6. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
+7. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb)

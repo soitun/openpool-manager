@@ -156,7 +156,7 @@ def process_transcode_events(context, processed_events, previous_results=None):
     new_df_transcode = pd.DataFrame(transcode_data)
 
     # If we have previous results, we'll need to update them with the new data
-    if previous_results and not previous_results.get("transcode_performance").empty:
+    if previous_results and previous_results.get("transcode_performance") is not None and not previous_results.get("transcode_performance").empty:
         prev_df = previous_results.get("transcode_performance")
 
         # Create dictionaries to store aggregate values by worker
@@ -326,7 +326,7 @@ def process_ai_events(context, processed_events, previous_results=None):
     new_df_ai["model_pipeline"] = new_df_ai["model_id"] + " | " + new_df_ai["pipeline"]
 
     # If we have previous results, we'll need to update them with the new data
-    if previous_results and not previous_results.get("ai_performance").empty:
+    if previous_results and previous_results.get("ai_performance") is not None and not previous_results.get("ai_performance").empty:
         prev_df = previous_results.get("ai_performance")
 
         # Create a mapping for aggregating by worker, model, and pipeline
@@ -836,8 +836,8 @@ def worker_performance_s3(context, worker_performance: Dict) -> None:
         "export_timestamp": timestamp,
         "node_type": node_type,
         "region": region,
-        "transcode_performance": transcode_perf.to_dict(orient="records") if not transcode_perf.empty else [],
-        "ai_performance": ai_perf.to_dict(orient="records") if not ai_perf.empty else [],
+        "transcode_performance": transcode_perf.to_dict(orient="records") if transcode_perf is not None and not transcode_perf.empty else [],
+        "ai_performance": ai_perf.to_dict(orient="records") if ai_perf is not None and not ai_perf.empty else [],
         "ai_model_pipeline_rankings": {
             k: v.to_dict(orient="records") for k, v in ai_rankings.items()
         } if ai_rankings else {}
@@ -862,8 +862,8 @@ def worker_performance_s3(context, worker_performance: Dict) -> None:
             ContentType="application/json"
         )
         # Log export success
-        transcode_worker_count = len(transcode_perf) if not transcode_perf.empty else 0
-        ai_worker_count = len(ai_perf) if not ai_perf.empty else 0
+        transcode_worker_count = len(transcode_perf) if transcode_perf is not None and not transcode_perf.empty else 0
+        ai_worker_count = len(ai_perf) if ai_perf is not None and not ai_perf.empty else 0
         ai_model_count = len(ai_rankings) if ai_rankings else 0
 
         context.log.info(

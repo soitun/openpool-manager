@@ -78,6 +78,24 @@ class S3Resource(ConfigurableResource):
             print(f"Error listing objects with prefix {prefix}: {e}")
             return []
 
+    def archive_keys(self, keys, archive_bucket=None, archive_prefix="archive/"):
+        """Copy S3 keys to an archive bucket/prefix for long-term retention."""
+        client = self.client()
+        target_bucket = archive_bucket or self.bucket
+        archived, errors = 0, 0
+        for key in keys:
+            try:
+                client.copy_object(
+                    Bucket=target_bucket,
+                    CopySource={"Bucket": self.bucket, "Key": key},
+                    Key=f"{archive_prefix}{key}"
+                )
+                archived += 1
+            except Exception as e:
+                print(f"Error archiving {key}: {e}")
+                errors += 1
+        return {"archived": archived, "errors": errors}
+
     def get_object(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Get an object from the bucket.

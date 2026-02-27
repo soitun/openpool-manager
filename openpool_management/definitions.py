@@ -51,6 +51,8 @@ defs = Definitions(
                 aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
                 aws_region=os.environ.get("AWS_REGION", "us-east-1"),
                 path_style=True,
+                archive_bucket=os.environ.get("S3_ARCHIVE_BUCKET"),
+                archive_prefix=os.environ.get("S3_ARCHIVE_PREFIX", "archive/"),
             )
         ),
         "s3_metrics": S3Resource(

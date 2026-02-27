@@ -2,6 +2,7 @@
 import pickle
 import logging
 import os
+import tempfile
 from dagster import IOManager, io_manager
 
 IO_MANAGER_BASE_DIR = os.environ.get("IO_MANAGER_BASE_DIR", "data")
@@ -53,78 +54,79 @@ class PartitionedFilesystemIOManager(IOManager):
             logging.info(f"Non-partitioned path: {full_path}")
             return full_path
 
+    def _get_empty_fallback(self, context):
+        """Return an appropriate empty fallback value based on asset type."""
+        asset_key_str = "/".join(context.asset_key.path)
+        logging.warning(f"Returning empty fallback for asset: {asset_key_str}")
+
+        if "worker_fees" in asset_key_str:
+            return {"worker_states": {}, "metadata": {}}
+        elif "worker_connections" in asset_key_str:
+            return {"worker_states": {}, "metadata": {}}
+        elif "worker_payments" in asset_key_str:
+            return {"payment_states": {}, "payment_events": [], "metadata": {}}
+        elif "processed_jobs" in asset_key_str:
+            return {"processed_events": [], "pending_jobs": {}}
+        elif "worker_performance_analytics" in asset_key_str:
+            return {
+                "transcode_performance": None,
+                "ai_performance": None,
+                "ai_model_pipeline_rankings": {},
+                "processed_event_ids": set()
+            }
+        elif "worker_summary_analytics" in asset_key_str:
+            return {"workers": {}, "aggregates": {"total_workers": 0, "active_workers": 0, "total_fees": 0}}
+        else:
+            return {}
+
     def handle_output(self, context, obj):
-        """Save object to file"""
+        """Save object to file using atomic write (temp file + fsync + rename)."""
         logging.info(f"Handling output for {context.asset_key}")
         path = self._get_path(context)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dir_path = os.path.dirname(path)
+        os.makedirs(dir_path, exist_ok=True)
 
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".pkl.tmp")
         try:
-            with open(path, "wb") as f:
+            with os.fdopen(tmp_fd, "wb") as f:
                 pickle.dump(obj, f)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Backup existing file before replacing
+            bak_path = path + ".bak"
+            if os.path.exists(path):
+                os.replace(path, bak_path)
+
+            os.rename(tmp_path, path)
             logging.info(f"Successfully saved data to {path}")
-        except Exception as e:
-            logging.error(f"Error saving data to {path}: {str(e)}")
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
             raise
 
     def load_input(self, context):
-        """Load object from file with graceful fallback"""
+        """Load object from file with .bak recovery and graceful fallback."""
         logging.info(f"Loading input for {context.asset_key}")
         path = self._get_path(context)
 
-        # Modified to return empty dict instead of raising error if file doesn't exist
         if not os.path.exists(path):
-            logging.warning(f"Input not found at path: {path}, returning empty object")
-
-            # Determine appropriate empty value based on asset name/key
-            asset_key_str = str(context.asset_key)
-
-            if "worker_fees" in asset_key_str:
-                return {"worker_states": {}, "metadata": {}}
-            elif "worker_connections" in asset_key_str:
-                return {"worker_states": {}, "metadata": {}}
-            elif "worker_payments" in asset_key_str:
-                return {"payment_states": {}, "payment_events": [], "metadata": {}}
-            elif "processed_jobs" in asset_key_str:
-                return {"processed_events": [], "pending_jobs": {}}
-            elif "worker_performance_analytics" in asset_key_str:
-                return {
-                    "transcode_performance": pd.DataFrame(),
-                    "ai_performance": pd.DataFrame(),
-                    "ai_model_pipeline_rankings": {}
-                }
-            elif "worker_summary_analytics" in asset_key_str:
-                return {
-                    "workers": {},
-                    "aggregates": {
-                        "total_workers": 0,
-                        "active_workers": 0,
-                        "total_fees": 0
-                    }
-                }
-            else:
-                # Generic fallback - empty dict
-                return {}
+            return self._get_empty_fallback(context)
 
         try:
             with open(path, "rb") as f:
                 return pickle.load(f)
         except Exception as e:
-            logging.error(f"Error loading input from {path}: {str(e)}")
-            logging.error(f"Exception details: {type(e).__name__}: {str(e)}")
-
-            # Return appropriate empty fallback
-            asset_key_str = str(context.asset_key)
-            if "worker_fees" in asset_key_str:
-                return {"worker_states": {}, "metadata": {}}
-            elif "worker_connections" in asset_key_str:
-                return {"worker_states": {}, "metadata": {}}
-            # ... other fallbacks as above ...
-            else:
-                return {}
+            logging.error(f"Error loading {path}: {e}")
+            bak_path = path + ".bak"
+            if os.path.exists(bak_path):
+                try:
+                    with open(bak_path, "rb") as f:
+                        logging.info(f"Recovered from backup: {bak_path}")
+                        return pickle.load(f)
+                except Exception:
+                    logging.error(f"Backup also corrupt: {bak_path}")
+            return self._get_empty_fallback(context)
 
 
 @io_manager

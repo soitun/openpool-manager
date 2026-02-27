@@ -1,12 +1,16 @@
 from dagster import AssetKey, define_asset_job, AssetSelection
 
 # -------------------- Jobs --------------------
-# Define the main job that runs the whole pipeline
+# Define the main job that runs the whole pipeline (excludes payments and payment-dependent assets)
 process_inbound_events_job = define_asset_job(
     name="process_inbound_events",
-    selection=AssetSelection.all(),
-    description="Process OpenPool events by region, node type",
-    # Add config to control partition handling if needed
+    selection=(
+        AssetSelection.all()
+        - AssetSelection.keys(AssetKey(["worker", "worker_payments"]))
+        - AssetSelection.keys(AssetKey(["summary", "worker_summary_analytics"]))
+        - AssetSelection.keys(AssetKey(["export", "worker_summary_s3"]))
+    ),
+    description="Process OpenPool events (excludes payments and payment-dependent analytics)",
     config={"execution": {"config": {"multiprocess": {"max_concurrent": 5}}}}
 )
 

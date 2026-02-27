@@ -1,11 +1,132 @@
-from dagster import asset,AssetIn, MetadataValue
+from dagster import asset, AssetIn, MetadataValue
 from datetime import datetime
 import uuid
 import os
 import json
+import tempfile
 from openpool_management.models import parse_partition_key
 from openpool_management.partitions import multi_partitions
 
+# -------------------- WAL Helpers --------------------
+
+WAL_DIR_TEMPLATE = "{base_dir}/wal/worker_payments/{node_type}/{region}"
+
+
+def _get_wal_path(node_type, region):
+    base_dir = os.environ.get("IO_MANAGER_BASE_DIR", "data")
+    wal_dir = WAL_DIR_TEMPLATE.format(base_dir=base_dir, node_type=node_type, region=region)
+    os.makedirs(wal_dir, exist_ok=True)
+    return os.path.join(wal_dir, "payment_wal.jsonl")
+
+
+def _write_wal_entry(wal_path, entry):
+    """Append a WAL entry with fsync."""
+    with open(wal_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _read_wal_entries(wal_path):
+    """Read WAL, deduplicate by payment_id (last entry wins)."""
+    if not os.path.exists(wal_path):
+        return []
+    by_id = {}
+    with open(wal_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                by_id[entry["payment_id"]] = entry
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return list(by_id.values())
+
+
+def _clear_wal(wal_path):
+    """Atomically clear the WAL."""
+    wal_dir = os.path.dirname(wal_path)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=wal_dir, suffix=".tmp")
+    os.close(tmp_fd)
+    os.rename(tmp_path, wal_path)
+
+
+def _reconcile_wal(wal_path, payment_states, context):
+    """
+    Reconcile WAL entries against current payment state.
+
+    For each WAL entry:
+    - completed: credit the payment if not already in history
+    - pending: crash between WAL write and send_eth result — flag for investigation
+    - failed: no action needed
+    """
+    entries = _read_wal_entries(wal_path)
+    if not entries:
+        return payment_states
+
+    context.log.info(f"Reconciling {len(entries)} WAL entries")
+
+    for entry in entries:
+        status = entry.get("status")
+        payment_id = entry.get("payment_id")
+        eth_address = entry.get("eth_address")
+
+        if status == "completed":
+            # Check if this payment is already recorded in history
+            state = payment_states.get(eth_address, {})
+            existing_ids = {p.get("payment_id") for p in state.get("payment_history", [])}
+            if payment_id not in existing_ids:
+                context.log.warning(
+                    f"WAL reconciliation: crediting completed payment {payment_id} "
+                    f"for {eth_address} ({entry.get('amount_wei', 0) / 1e18:.6f} ETH)"
+                )
+                amount = entry.get("amount_wei", 0)
+                if eth_address not in payment_states:
+                    payment_states[eth_address] = {
+                        "eth_address": eth_address,
+                        "total_fees_earned": 0,
+                        "total_fees_paid": 0,
+                        "last_payment_timestamp": None,
+                        "payment_history": []
+                    }
+                payment_states[eth_address]["total_fees_paid"] += amount
+                payment_states[eth_address]["last_payment_timestamp"] = entry.get("timestamp")
+                payment_states[eth_address].setdefault("payment_history", []).append({
+                    "payment_id": payment_id,
+                    "eth_address": eth_address,
+                    "amount": amount,
+                    "timestamp": entry.get("timestamp"),
+                    "transaction_hash": entry.get("tx_hash"),
+                    "status": "completed",
+                    "source": "wal_reconciliation"
+                })
+
+        elif status == "pending":
+            # Crash happened between WAL write and send_eth return.
+            # We don't know if the ETH was sent. Flag for manual investigation.
+            context.log.critical(
+                f"WAL PENDING ENTRY: payment {payment_id} to {eth_address} for "
+                f"{entry.get('amount_wei', 0) / 1e18:.6f} ETH — process crashed before "
+                f"confirming send result. Worker will be SKIPPED until manually investigated."
+            )
+            if eth_address not in payment_states:
+                payment_states[eth_address] = {
+                    "eth_address": eth_address,
+                    "total_fees_earned": 0,
+                    "total_fees_paid": 0,
+                    "last_payment_timestamp": None,
+                    "payment_history": []
+                }
+            payment_states[eth_address]["_wal_needs_investigation"] = True
+
+        # status == "failed" — no action needed
+
+    return payment_states
+
+
+# -------------------- Asset --------------------
 
 @asset(
     key_prefix=["worker"],
@@ -79,6 +200,11 @@ def worker_payments(context, worker_fees):
             "payment_history": state_dict.get("payment_history", [])
         }
 
+    # --- WAL Reconciliation ---
+    wal_path = _get_wal_path(node_type, region)
+    payment_states = _reconcile_wal(wal_path, payment_states, context)
+    _clear_wal(wal_path)
+
     # Process worker fees to sync total earnings
     for eth_address, fee_info in worker_fee_states.items():
         worker_earnings = fee_info.get("worker_earnings", 0)
@@ -137,11 +263,18 @@ def worker_payments(context, worker_fees):
 
     # Check each worker for payment eligibility
     for eth_address, state in payment_states.items():
+        # Skip workers flagged for WAL investigation
+        if state.get("_wal_needs_investigation"):
+            context.log.warning(
+                f"[{node_type}/{region}] SKIPPING worker {eth_address} — flagged for WAL investigation"
+            )
+            continue
+
         # Check if payment is due
         unpaid_fees = state["unpaid_fees"]
         if unpaid_fees >= payment_threshold_wei:
             context.log.info(
-                f"[{node_type}/{region}] ✅ Worker {eth_address} eligible for payment: "
+                f"[{node_type}/{region}] Worker {eth_address} eligible for payment: "
                 f"{unpaid_fees / 1e18:.6f} ETH (threshold: {payment_threshold_wei / 1e18:.6f} ETH)"
             )
             workers_due_payment.append({
@@ -157,10 +290,18 @@ def worker_payments(context, worker_fees):
             payment_id = f"pmt_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
             try:
-                # Execute blockchain payment
+                # 1. Write WAL "pending" entry BEFORE send
+                _write_wal_entry(wal_path, {
+                    "payment_id": payment_id,
+                    "eth_address": eth_address,
+                    "amount_wei": unpaid_fees,
+                    "status": "pending",
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                # 2. Execute blockchain payment
                 context.log.info(f"[{node_type}/{region}] Executing blockchain payment to {eth_address}...")
 
-                # Send ETH transaction on the blockchain
                 tx_result = context.resources.payment_processor.send_eth(
                     amount_wei=unpaid_fees,
                     to_address=eth_address
@@ -169,6 +310,16 @@ def worker_payments(context, worker_fees):
                 # Extract transaction hash and status
                 tx_hash = tx_result.get('transaction_hash')
                 status = tx_result.get('status')
+
+                # 3. Write WAL result entry AFTER send
+                _write_wal_entry(wal_path, {
+                    "payment_id": payment_id,
+                    "eth_address": eth_address,
+                    "amount_wei": unpaid_fees,
+                    "status": status,
+                    "tx_hash": tx_hash,
+                    "timestamp": datetime.now().isoformat()
+                })
 
                 # Log transaction details
                 context.log.info(
@@ -199,12 +350,12 @@ def worker_payments(context, worker_fees):
                     state["unpaid_fees"] = state["total_fees_earned"] - state["total_fees_paid"]
 
                     context.log.info(
-                        f"[{node_type}/{region}] ✓ Payment completed {payment_id} for worker {eth_address}: "
+                        f"[{node_type}/{region}] Payment completed {payment_id} for worker {eth_address}: "
                         f"{unpaid_fees / 1e18:.6f} ETH (TX: {tx_hash})"
                     )
                 else:
                     context.log.error(
-                        f"[{node_type}/{region}] ❌ Blockchain payment failed for {eth_address}: "
+                        f"[{node_type}/{region}] Blockchain payment failed for {eth_address}: "
                         f"Status: {status}, Error: {tx_result.get('error', 'Unknown error')}"
                     )
 
@@ -212,8 +363,18 @@ def worker_payments(context, worker_fees):
                 payment_events_generated.append(payment_event)
 
             except Exception as e:
+                # Write WAL failure entry
+                _write_wal_entry(wal_path, {
+                    "payment_id": payment_id,
+                    "eth_address": eth_address,
+                    "amount_wei": unpaid_fees,
+                    "status": "failed",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+
                 # Handle payment failure
-                context.log.error(f"[{node_type}/{region}] ❌ Payment failed for {eth_address}: {str(e)}")
+                context.log.error(f"[{node_type}/{region}] Payment failed for {eth_address}: {str(e)}")
                 context.log.error(f"Exception details: {type(e).__name__}: {str(e)}")
                 import traceback
                 context.log.error(f"Traceback: {traceback.format_exc()}")
@@ -229,6 +390,10 @@ def worker_payments(context, worker_fees):
                 }
 
                 payment_events_generated.append(payment_event)
+
+    # Strip internal WAL investigation flags before persisting
+    for state in payment_states.values():
+        state.pop("_wal_needs_investigation", None)
 
     # Log payment summary
     if workers_due_payment:

@@ -23,6 +23,8 @@ class S3Config(Config):
     aws_secret_access_key: Optional[str] = None
     aws_region: str = "us-east-1"  # Default region for S3 client
     path_style: bool = True  # Use path-style addressing
+    archive_bucket: Optional[str] = None  # Separate bucket for archived files (no TTL)
+    archive_prefix: str = "archive/"  # Prefix for archived files
 
 class RawEventsConfig(Config):
     """Configuration for raw events asset"""
