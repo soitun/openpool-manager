@@ -72,32 +72,19 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ---
 
-### 9. `worker_connections` discards disconnected workers
+### 9. ~~`worker_connections` discards disconnected workers~~ FIXED
 
-**File:** `openpool_management/assets/worker.py:282-287`
+**Status:** FIXED — Disconnected workers now stay in state with `active: False`, `is_active: False`, and a `last_seen` timestamp. The purge block has been replaced with active/inactive counting and richer metadata (`total_worker_count`, `active_worker_count`, `inactive_worker_count`).
 
-After processing events, workers with zero active connections are removed from state entirely. If a worker disconnects temporarily, their entire record is purged.
-
-**Impact:**
-- A worker who disconnects then reconnects appears as a brand-new worker.
-- The summary analytics loses visibility into workers that are between connections.
-- No historical record of workers who were once active.
-
-**Fix:** Keep disconnected workers in state with `active: False` rather than removing them. Add a separate "last_seen" timestamp for cleanup of truly stale workers after a configurable retention period.
+**File:** `openpool_management/assets/worker.py`
 
 ---
 
-### 10. Hardcoded `valid_combinations` duplicated across sensors
+### 10. ~~Hardcoded `valid_combinations` duplicated across sensors~~ FIXED
 
-**File:** `openpool_management/sensors.py:29-35` and `sensors.py:199-205`
+**Status:** FIXED — `VALID_COMBINATIONS` is now defined as a constant in `partitions.py` with a comment explaining the 3 excluded cells. Both `s3_event_sensor` and `worker_payment_sensor` import this constant instead of maintaining local copies.
 
-Both sensors hardcode the same 5 partition combinations. The partition definition (`partitions.py`) defines an 8-cell grid (4 regions x 2 node types), but only 5 are active.
-
-**Impact:**
-- Adding a new region or node type requires updating both sensors manually.
-- The 3 unused partition cells (`ai|us-west`, `ai|eu-central`, `ai|oceania`) can be manually triggered in the Dagster UI but will never be triggered by sensors — a source of confusion.
-
-**Fix:** Define `VALID_COMBINATIONS` as a constant in `partitions.py` and import it in both sensors. Consider also reducing the `MultiPartitionsDefinition` to only the valid combinations, or adding a comment explaining why 3 cells are intentionally excluded.
+**Files:** `openpool_management/partitions.py`, `openpool_management/sensors.py`
 
 ---
 
@@ -146,23 +133,11 @@ The `processed_event_ids` set grows unboundedly across materializations. Over mo
 
 ---
 
-### 15. No retry/backoff on blockchain RPC calls
+### 15. ~~No retry/backoff on blockchain RPC calls~~ FIXED
 
-**File:** `openpool_management/resources.py:109, 169-264`
+**Status:** FIXED — Added `_retry_rpc()` helper (stdlib, no extra dependency) with 3 attempts and exponential backoff (1s→2s→4s, capped at 10s). Wrapped `get_balance`, `get_transaction_count`, `gas_price`, `send_raw_transaction`, and `wait_for_transaction_receipt` in `send_eth()`. Receipt wait uses longer backoff (2s→4s→8s, capped at 15s).
 
-`Web3Client` makes RPC calls (`is_connected`, `get_balance`, `get_transaction_count`, `gas_price`, `send_raw_transaction`, `wait_for_transaction_receipt`) with no retry logic. Arbitrum RPC endpoints have rate limits and intermittent failures.
-
-**Impact:** A single RPC timeout during a payment run causes the entire materialization to fail, potentially after some payments have already been sent successfully (compounding issue #4). Transient network issues become permanent failures.
-
-**Fix:** Add retry with exponential backoff around RPC calls, at minimum around `send_raw_transaction` and `wait_for_transaction_receipt`. Consider using `web3.py`'s built-in retry middleware or a library like `tenacity`:
-
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10))
-def _send_with_retry(self, raw_tx):
-    return self.w3.eth.send_raw_transaction(raw_tx)
-```
+**File:** `openpool_management/resources.py`
 
 ---
 
@@ -215,25 +190,11 @@ The following config classes are defined but never imported or used:
 
 ---
 
-### 19. Payment sensor passes `run_config` that `worker_payments` ignores
+### 19. ~~Payment sensor passes `run_config` that `worker_payments` ignores~~ FIXED
 
-**File:** `openpool_management/sensors.py:248-249`
+**Status:** FIXED — Removed the unused `run_config` from `worker_payment_sensor`'s `RunRequest`. The asset reads the threshold from `context.resources.payment_processor.get_payment_threshold()` which is the single source of truth.
 
-The sensor sends:
-```python
-{"ops": {"worker__worker_payments": {"config": {"payment_threshold_wei": payment_threshold_wei}}}}
-```
-
-But `worker_payments` reads the threshold from:
-```python
-context.resources.payment_processor.get_payment_threshold()  # payment.py:31
-```
-
-The `op_config` value is never read.
-
-**Impact:** Misleading — suggests the threshold is configurable per-run but it isn't.
-
-**Fix:** Either read from `op_config` in the asset (making it truly configurable per-run) or remove the `run_config` from the sensor.
+**File:** `openpool_management/sensors.py`
 
 ---
 
@@ -293,27 +254,27 @@ These files are also never read back by any part of the pipeline — they are wr
 | **High** | 6 | FIXED | `processed_jobs` inconsistent state loading |
 | **High** | 7 | FIXED | `pd.DataFrame()` NameError in IO manager |
 | **High** | 8 | PARTIAL | Payment sensor hardcoded path (env var fixed, still direct file read) |
-| **High** | 9 | OPEN | `worker_connections` discards disconnected workers |
-| **High** | 10 | OPEN | Hardcoded `valid_combinations` duplication |
+| **High** | 9 | FIXED | `worker_connections` keeps disconnected workers |
+| **High** | 10 | FIXED | `VALID_COMBINATIONS` constant in `partitions.py` |
 | **Medium** | 11 | OPEN | `raw_events` not persisted by IO manager |
 | **Medium** | 12 | FIXED | Atomic writes in IO manager |
 | **Medium** | 13 | FIXED | S3 client cached via PrivateAttr |
 | **Medium** | 14 | OPEN | `processed_event_ids` unbounded growth |
-| **Medium** | 15 | OPEN | No RPC retry/backoff |
+| **Medium** | 15 | FIXED | RPC retry/backoff with exponential backoff |
 | **Medium** | 16 | OPEN | Gas price race condition (low risk on Arbitrum) |
 | **Low** | 17 | OPEN | Unused Pydantic models |
 | **Low** | 18 | OPEN | Unused config classes |
-| **Low** | 19 | OPEN | Payment sensor unused `run_config` |
+| **Low** | 19 | FIXED | Removed unused `run_config` from payment sensor |
 | **Low** | 20 | OPEN | `active_workers` count inconsistency |
 | **Low** | 21 | OPEN | `payments/` directory not durable |
 | **Low** | 22 | FIXED | Duplicate `os.makedirs` |
 | **New** | 23 | FIXED | S3 archival on success |
 
-### Progress: 11 FIXED, 1 PARTIAL, 11 OPEN
+### Progress: 15 FIXED, 1 PARTIAL, 7 OPEN
 
 ### Recommended Next Fixes
 
-1. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
-2. **#9** — Keep disconnected workers in state (HIGH — data continuity)
-3. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
-4. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, now affects both `worker_fees` and `worker_performance_analytics`)
+1. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, affects both `worker_fees` and `worker_performance_analytics`)
+2. **#20** — Fix `active_workers` count inconsistency in `worker_summary_analytics` (LOW — aggregates undercount on incremental runs)
+3. **#11** — Persist `raw_events` via IO manager or add S3 retry (MEDIUM — expensive re-fetch on retry)
+4. **#16** — Gas price race condition (MEDIUM — low risk on Arbitrum, consider EIP-1559 for other chains)

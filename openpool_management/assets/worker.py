@@ -273,24 +273,28 @@ def worker_connections(context: AssetExecutionContext, raw_events: List[RawEvent
                 worker_states[eth_address]["active"] = len(worker_states[eth_address]["connections"]) > 0
                 context.log.info(f"Removed connection {connection_string} for worker {eth_address}")
 
-    # Add helper methods as properties of each worker state
+    # Update computed fields on each worker state
     for eth_address, worker in worker_states.items():
         worker["connection_count"] = len(worker["connections"])
         worker["is_active"] = len(worker["connections"]) > 0
+        worker["active"] = worker["is_active"]
+        if not worker["is_active"] and "last_seen" not in worker:
+            worker["last_seen"] = datetime.now().isoformat()
+        elif worker["is_active"]:
+            worker.pop("last_seen", None)
 
-    # Clean up - remove workers with no connections
-    active_workers = {k: v for k, v in worker_states.items() if v["connections"]}
-    removed_count = len(worker_states) - len(active_workers)
-    if removed_count > 0:
-        context.log.info(f"Removed {removed_count} workers with no active connections")
+    # Count active vs inactive workers (disconnected workers stay in state)
+    active_workers = {k: v for k, v in worker_states.items() if v["is_active"]}
+    inactive_workers = {k: v for k, v in worker_states.items() if not v["is_active"]}
 
-    worker_states = active_workers
+    if inactive_workers:
+        context.log.info(f"{len(inactive_workers)} workers with no active connections kept in state as inactive")
 
     # Add metadata about what we found
     connection_count = sum(len(worker["connections"]) for worker in worker_states.values())
-    context.log.info(f"Final state: {len(worker_states)} active workers with {connection_count} total connections")
+    context.log.info(f"Final state: {len(worker_states)} total workers ({len(active_workers)} active, "
+                     f"{len(inactive_workers)} inactive) with {connection_count} total connections")
 
-    # At process completion, add detailed worker status
     active_pct = (len(active_workers) / len(worker_states) * 100) if worker_states else 0
     context.log.info(
         f"[{node_type}/{region}] Worker connection state: {len(active_workers)}/{len(worker_states)} active "
@@ -300,7 +304,9 @@ def worker_connections(context: AssetExecutionContext, raw_events: List[RawEvent
     context.add_output_metadata({
         "node_type": node_type,
         "region": region,
-        "worker_count": len(worker_states),
+        "total_worker_count": len(worker_states),
+        "active_worker_count": len(active_workers),
+        "inactive_worker_count": len(inactive_workers),
         "connection_count": connection_count,
         "connection_events": len(connection_events),
         "disconnection_events": len(disconnection_events),

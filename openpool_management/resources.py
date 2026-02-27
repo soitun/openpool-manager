@@ -1,4 +1,6 @@
 import boto3
+import time
+import logging
 from typing import Optional, Dict, Any, List
 from dagster import ConfigurableResource
 from pydantic import PrivateAttr
@@ -115,6 +117,22 @@ class S3Resource(ConfigurableResource):
             return None
 
 
+def _retry_rpc(fn, max_attempts=3, base_delay=1.0, max_delay=10.0):
+    """Retry an RPC call with exponential backoff. Raises the last exception on exhaustion."""
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt == max_attempts:
+                raise
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            logging.warning(f"RPC call failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {delay:.1f}s...")
+            time.sleep(delay)
+    raise last_exc  # unreachable but satisfies type checkers
+
+
 class Web3Client:
     """Stateful client for Web3 interactions with support for keystore files"""
 
@@ -202,19 +220,19 @@ class Web3Client:
         if not self.w3.is_address(to_address):
             raise ValueError(f"Invalid Ethereum address: {to_address}")
 
-        # Check sender balance
-        sender_balance = self.w3.eth.get_balance(self.account.address)
+        # Check sender balance (with retry)
+        sender_balance = _retry_rpc(lambda: self.w3.eth.get_balance(self.account.address))
         if sender_balance < amount_wei:
             raise ValueError(
                 f"Insufficient balance: {Web3.from_wei(sender_balance, 'ether')} ETH, "
                 f"needed: {Web3.from_wei(amount_wei, 'ether')} ETH"
             )
 
-        # Get nonce for the transaction
-        nonce = self.w3.eth.get_transaction_count(self.account.address, 'pending')
+        # Get nonce for the transaction (with retry)
+        nonce = _retry_rpc(lambda: self.w3.eth.get_transaction_count(self.account.address, 'pending'))
 
-        # Get current gas price
-        gas_price = self.w3.eth.gas_price
+        # Get current gas price (with retry)
+        gas_price = _retry_rpc(lambda: self.w3.eth.gas_price)
 
         # Check against gas price threshold
         if gas_price > self.config.max_gas_price_wei:
@@ -251,13 +269,18 @@ class Web3Client:
         else:
             raise AttributeError("Cannot find raw transaction data on signed transaction")
 
-        # Send transaction
-        tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
+        # Send transaction (with retry)
+        tx_hash = _retry_rpc(lambda: self.w3.eth.send_raw_transaction(raw_tx))
         tx_hash_hex = tx_hash.hex()
 
-        # Wait for transaction receipt
+        # Wait for transaction receipt (with retry — covers transient RPC timeouts)
         try:
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = _retry_rpc(
+                lambda: self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60),
+                max_attempts=3,
+                base_delay=2.0,
+                max_delay=15.0
+            )
 
             # Check transaction status
             if receipt.status != 1:

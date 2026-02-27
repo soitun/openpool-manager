@@ -5,6 +5,8 @@ from datetime import datetime
 import os
 import pickle
 
+from openpool_management.partitions import VALID_COMBINATIONS
+
 
 @sensor(
     job_name="process_inbound_events",
@@ -27,15 +29,6 @@ def s3_event_sensor(context: SensorEvaluationContext):
     # Configure batch size
     max_files_per_batch = 250
 
-    # Define the combinations to check based on partitions
-    valid_combinations = [
-        ("ai", "us-central"),
-        ("transcode", "us-central"),
-        ("transcode", "us-west"),
-        ("transcode", "eu-central"),
-        ("transcode", "oceania"),
-    ]
-
     # Load cursor data (two-phase format)
     cursor_data = {}
     if context.cursor:
@@ -49,7 +42,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
         context.log.info("No existing cursor data found")
 
     # Ensure all partitions have the two-phase structure
-    for node_type, region in valid_combinations:
+    for node_type, region in VALID_COMBINATIONS:
         key = f"{node_type}_{region}"
         if key not in cursor_data:
             cursor_data[key] = {
@@ -70,7 +63,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
     # ============================================================
     # PHASE 1: Reconcile pending runs
     # ============================================================
-    for node_type, region in valid_combinations:
+    for node_type, region in VALID_COMBINATIONS:
         key = f"{node_type}_{region}"
         entry = cursor_data[key]
 
@@ -154,7 +147,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
     # ============================================================
     runs_created = 0
 
-    for node_type, region in valid_combinations:
+    for node_type, region in VALID_COMBINATIONS:
         key = f"{node_type}_{region}"
         partition_key = f"{node_type}|{region}"
         entry = cursor_data[key]
@@ -280,14 +273,6 @@ def worker_payment_sensor(context: SensorEvaluationContext):
     instance = context.instance
     payment_threshold_wei = context.resources.payment_processor.get_payment_threshold()
 
-    valid_combinations = [
-        ("ai", "us-central"),
-        ("transcode", "us-central"),
-        ("transcode", "us-west"),
-        ("transcode", "eu-central"),
-        ("transcode", "oceania"),
-    ]
-
     # Check for active payment runs to prevent overlapping payments
     existing_payment_runs = instance.get_runs(
         filters=RunsFilter(
@@ -306,7 +291,7 @@ def worker_payment_sensor(context: SensorEvaluationContext):
 
     base_dir = os.environ.get("IO_MANAGER_BASE_DIR", "data")
 
-    for node_type, region in valid_combinations:
+    for node_type, region in VALID_COMBINATIONS:
         partition_key = f"{node_type}|{region}"
 
         # Skip partitions with active payment runs
@@ -360,8 +345,6 @@ def worker_payment_sensor(context: SensorEvaluationContext):
     return [RunRequest(
         run_key=f"worker_payment_{partition_key}_{datetime.now().strftime('%Y%m%d_%H%M')}",
         partition_key=partition_key,
-        run_config={"ops": {
-            "worker__worker_payments": {"config": {"payment_threshold_wei": payment_threshold_wei}}}},
         tags={
             "source": "worker_payment_sensor",
             "workers_due_count": str(len(workers_due)),
