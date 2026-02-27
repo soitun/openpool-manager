@@ -558,11 +558,6 @@ def worker_summary_analytics(
                 "active": len(connections) > 0
             })
 
-            # Update aggregates
-            if len(connections) > 0:
-                worker_summary["aggregates"]["active_workers"] += 1
-            worker_summary["aggregates"]["total_connections"] += len(connections)
-
     # Process worker payment data - paid fees comes from worker_payments
     if payment_states:
         total_payment_count = 0
@@ -627,17 +622,18 @@ def worker_summary_analytics(
             worker_data["pending_fees"] = worker_data.get("worker_earnings", 0) - worker_data.get("total_fees_paid", 0)
             worker_data["pending_eth"] = worker_data["pending_fees"] / 1e18
 
-    # Update worker count
-    worker_summary["aggregates"]["total_workers"] = len(worker_summary["workers"])
-
-    # Update aggregates after all workers are processed
+    # Compute all aggregates from the final merged worker dict
+    workers = worker_summary["workers"]
     worker_summary["aggregates"].update({
-        "total_fees": sum(worker.get("total_fees", 0) for worker in worker_summary["workers"].values()),
-        "total_fees_paid": sum(worker.get("total_fees_paid", 0) for worker in worker_summary["workers"].values()),
-        "total_pending_fees": sum(worker.get("pending_fees", 0) for worker in worker_summary["workers"].values()),
-        "total_pool_commission": sum(worker.get("pool_commission", 0) for worker in worker_summary["workers"].values()),
-        "total_worker_earnings": sum(worker.get("worker_earnings", 0) for worker in worker_summary["workers"].values()),
-        "pool_commission_rate": pool_commission_rate,  # Use the variable instead of hard-coded value
+        "total_workers": len(workers),
+        "active_workers": sum(1 for w in workers.values() if w.get("active", False)),
+        "total_connections": sum(w.get("connection_count", 0) for w in workers.values()),
+        "total_fees": sum(w.get("total_fees", 0) for w in workers.values()),
+        "total_fees_paid": sum(w.get("total_fees_paid", 0) for w in workers.values()),
+        "total_pending_fees": sum(w.get("pending_fees", 0) for w in workers.values()),
+        "total_pool_commission": sum(w.get("pool_commission", 0) for w in workers.values()),
+        "total_worker_earnings": sum(w.get("worker_earnings", 0) for w in workers.values()),
+        "pool_commission_rate": pool_commission_rate,
     })
 
     # Add payment eligibility based on configured threshold

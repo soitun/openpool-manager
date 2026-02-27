@@ -79,6 +79,48 @@ class PartitionedFilesystemIOManager(IOManager):
         else:
             return {}
 
+    def load_for_sensor(self, asset_key_path, partition_key):
+        """Load persisted data for a given asset and partition, for use in sensors.
+
+        Unlike load_input/load_previous_output, this does not require any Dagster
+        context — just the asset key path (e.g. ["worker", "worker_payments"]) and
+        the partition key string (e.g. "ai|us-central").
+        """
+        key_path = "/".join(asset_key_path)
+
+        # Parse partition key
+        node_type, region = None, None
+        if isinstance(partition_key, str) and "|" in partition_key:
+            parts = partition_key.split("|")
+            if len(parts) == 2:
+                node_type, region = parts
+
+        if node_type and region:
+            partition_path = f"{node_type}/{region}"
+        else:
+            safe_partition = str(partition_key).replace('|', '_').replace('/', '_')
+            partition_path = f"partition/{safe_partition}"
+
+        path = os.path.join(self.base_dir, key_path, partition_path, "data.pkl")
+
+        if not os.path.exists(path):
+            return None
+
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except Exception as e:
+            logging.error(f"Error loading {path}: {e}")
+            bak_path = path + ".bak"
+            if os.path.exists(bak_path):
+                try:
+                    with open(bak_path, "rb") as f:
+                        logging.info(f"Recovered from backup: {bak_path}")
+                        return pickle.load(f)
+                except Exception:
+                    logging.error(f"Backup also corrupt: {bak_path}")
+            return None
+
     def load_previous_output(self, context):
         """Load the previous output for this asset/partition directly from disk.
 

@@ -12,6 +12,7 @@ from openpool_management.partitions import multi_partitions
     group_name="ingest",
     description="Ingest raw events from S3 bucket",
     partitions_def=multi_partitions,
+    io_manager_key="io_manager",
     required_resource_keys={"s3"}
 )
 def raw_events(context: AssetExecutionContext) -> List[RawEvent]:

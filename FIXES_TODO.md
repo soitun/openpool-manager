@@ -64,11 +64,11 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ---
 
-### 8. ~~Payment sensor reads pickle files directly from disk~~ PARTIALLY FIXED
+### 8. ~~Payment sensor reads pickle files directly from disk~~ FIXED
 
-**Status:** PARTIALLY FIXED — The hardcoded `"data"` path is now read from `IO_MANAGER_BASE_DIR` env var, and `.bak` fallback is added for corrupt pickle recovery. The sensor still reads pickle files directly rather than going through Dagster's materialization API.
+**Status:** FIXED — Added `load_for_sensor(asset_key_path, partition_key)` method to `PartitionedFilesystemIOManager` that handles path construction, pickle loading, and `.bak` recovery. The `worker_payment_sensor` now calls `io_mgr.load_for_sensor(...)` instead of constructing paths and reading pickles directly. Direct `pickle`/`os` imports removed from `sensors.py`.
 
-**File:** `openpool_management/sensors.py`
+**Files:** `openpool_management/io_manager.py`, `openpool_management/sensors.py`
 
 ---
 
@@ -90,15 +90,11 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ## MEDIUM — Resilience / Performance
 
-### 11. `raw_events` is not persisted by the IO manager
+### 11. ~~`raw_events` is not persisted by the IO manager~~ FIXED
 
-**File:** `openpool_management/assets/events.py:10-16`
+**Status:** FIXED — Added `io_manager_key="io_manager"` to the `raw_events` asset. Parsed events are now persisted in the same partitioned pickle structure as all other assets, eliminating S3 re-fetch on retry.
 
-The `raw_events` asset does not specify `io_manager_key`. It returns `List[RawEvent]` which Dagster stores via the default IO manager (filesystem pickle in the Dagster storage directory, not the custom partitioned IO manager). If downstream assets fail and the run is retried, `raw_events` must re-fetch everything from S3.
-
-**Impact:** For 250 files per batch, re-fetching on retry is expensive and depends on S3 availability. If S3 has an outage during retry, the entire run fails again.
-
-**Fix:** Add `io_manager_key="io_manager"` to the `raw_events` asset so parsed events are persisted in the same partitioned structure. Alternatively, accept the re-fetch cost but add retry logic to the S3 calls.
+**File:** `openpool_management/assets/events.py`
 
 ---
 
@@ -198,29 +194,19 @@ The following config classes are defined but never imported or used:
 
 ---
 
-### 20. `worker_summary_analytics` active_workers count is inconsistent on incremental runs
+### 20. ~~`worker_summary_analytics` active_workers count is inconsistent on incremental runs~~ FIXED
 
-**File:** `openpool_management/assets/metrics.py:512-520, 580-582`
+**Status:** FIXED — Removed the `active_workers` / `total_connections` accumulation from inside the connection processing loop. Both are now computed from the final merged `worker_summary["workers"]` dict alongside `total_workers` and all other aggregates.
 
-Aggregates (`active_workers`, `total_connections`) are initialized to zero each run (line 512-520), then only populated from the current `worker_connection_states` (lines 580-582). Workers from a previous summary who still have connections but had no new connection events in this batch are carried over in the `workers` dict but their connections are **not** counted in the aggregates.
-
-**Impact:** `active_workers` and `total_connections` undercount on incremental runs when some workers had no new events.
-
-**Fix:** Compute aggregates from the final `worker_summary["workers"]` dict after all merging is complete, rather than accumulating during the connection processing loop.
+**File:** `openpool_management/assets/metrics.py`
 
 ---
 
-### 21. `payments/` directory writes are not durable
+### 21. ~~`payments/` directory writes are not durable~~ FIXED
 
-**File:** `openpool_management/assets/payment.py:246-266`
+**Status:** FIXED — Payment audit logs now write to `{IO_MANAGER_BASE_DIR}/payments/` instead of a relative `payments/` path. Since the IO manager base dir is on a mounted volume, audit logs inherit the same durability as all pipeline state.
 
-Payment event JSON files are written to a local `payments/` directory relative to CWD. In a Docker deployment with ephemeral containers (as configured in `dagster-template.yaml`), these files may be lost between runs unless the volume is explicitly mounted.
-
-These files are also never read back by any part of the pipeline — they are write-only audit logs with no guaranteed persistence.
-
-**Impact:** Audit trail is unreliable. Payment records may be lost on container restart.
-
-**Fix:** Write payment audit logs to S3 (durable) instead of or in addition to local disk. Or ensure the Docker volume mount includes the `payments/` directory.
+**File:** `openpool_management/assets/payment.py`
 
 ---
 
@@ -253,10 +239,10 @@ These files are also never read back by any part of the pipeline — they are wr
 | **Critical** | 5 | FIXED | Fragile `InputContext` self-loading |
 | **High** | 6 | FIXED | `processed_jobs` inconsistent state loading |
 | **High** | 7 | FIXED | `pd.DataFrame()` NameError in IO manager |
-| **High** | 8 | PARTIAL | Payment sensor hardcoded path (env var fixed, still direct file read) |
+| **High** | 8 | FIXED | Payment sensor uses `load_for_sensor` via IO manager |
 | **High** | 9 | FIXED | `worker_connections` keeps disconnected workers |
 | **High** | 10 | FIXED | `VALID_COMBINATIONS` constant in `partitions.py` |
-| **Medium** | 11 | OPEN | `raw_events` not persisted by IO manager |
+| **Medium** | 11 | FIXED | `raw_events` persisted via IO manager |
 | **Medium** | 12 | FIXED | Atomic writes in IO manager |
 | **Medium** | 13 | FIXED | S3 client cached via PrivateAttr |
 | **Medium** | 14 | OPEN | `processed_event_ids` unbounded growth |
@@ -265,16 +251,16 @@ These files are also never read back by any part of the pipeline — they are wr
 | **Low** | 17 | OPEN | Unused Pydantic models |
 | **Low** | 18 | OPEN | Unused config classes |
 | **Low** | 19 | FIXED | Removed unused `run_config` from payment sensor |
-| **Low** | 20 | OPEN | `active_workers` count inconsistency |
-| **Low** | 21 | OPEN | `payments/` directory not durable |
+| **Low** | 20 | FIXED | `active_workers` computed from final merged dict |
+| **Low** | 21 | FIXED | `payments/` writes to IO_MANAGER_BASE_DIR |
 | **Low** | 22 | FIXED | Duplicate `os.makedirs` |
 | **New** | 23 | FIXED | S3 archival on success |
 
-### Progress: 15 FIXED, 1 PARTIAL, 7 OPEN
+### Progress: 19 FIXED, 4 OPEN
 
-### Recommended Next Fixes
+### Remaining Fixes
 
 1. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, affects both `worker_fees` and `worker_performance_analytics`)
-2. **#20** — Fix `active_workers` count inconsistency in `worker_summary_analytics` (LOW — aggregates undercount on incremental runs)
-3. **#11** — Persist `raw_events` via IO manager or add S3 retry (MEDIUM — expensive re-fetch on retry)
-4. **#16** — Gas price race condition (MEDIUM — low risk on Arbitrum, consider EIP-1559 for other chains)
+2. **#16** — Gas price race condition (MEDIUM — low risk on Arbitrum, consider EIP-1559 for other chains)
+3. **#17** — Remove or adopt unused Pydantic models (LOW — dead code cleanup)
+4. **#18** — Remove or integrate unused config classes (LOW — dead code cleanup)

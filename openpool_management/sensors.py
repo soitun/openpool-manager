@@ -2,8 +2,6 @@
 from dagster import sensor, RunRequest, SkipReason, SensorEvaluationContext, RunsFilter, DagsterRunStatus
 import json
 from datetime import datetime
-import os
-import pickle
 
 from openpool_management.partitions import VALID_COMBINATIONS
 
@@ -264,8 +262,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
 @sensor(
     job_name="worker_payment_job",
     minimum_interval_seconds=14400,
-    required_resource_keys={"payment_processor"}
-
+    required_resource_keys={"payment_processor", "io_manager"}
 )
 def worker_payment_sensor(context: SensorEvaluationContext):
     """Sensor that checks worker fee states and triggers payment job when
@@ -286,10 +283,9 @@ def worker_payment_sensor(context: SensorEvaluationContext):
     if active_payment_partitions:
         context.log.info(f"Active payment partitions: {active_payment_partitions}")
 
-    # Check if asset has been recently materialized
+    # Check worker payment states via IO manager
     workers_due_by_partition = {}
-
-    base_dir = os.environ.get("IO_MANAGER_BASE_DIR", "data")
+    io_mgr = context.resources.io_manager
 
     for node_type, region in VALID_COMBINATIONS:
         partition_key = f"{node_type}|{region}"
@@ -301,40 +297,29 @@ def worker_payment_sensor(context: SensorEvaluationContext):
 
         context.log.info(f"Checking payment eligibility for {partition_key}")
 
-        # Use IO_MANAGER_BASE_DIR instead of hardcoded "data"
         try:
-            payment_path = os.path.join(base_dir, "worker", "worker_payments", f"{node_type}/{region}/data.pkl")
-            if os.path.exists(payment_path):
-                try:
-                    with open(payment_path, "rb") as f:
-                        payment_data = pickle.load(f)
-                except Exception as e:
-                    # Try .bak file on corrupt primary
-                    bak_path = payment_path + ".bak"
-                    if os.path.exists(bak_path):
-                        context.log.warning(f"Primary pickle corrupt, trying backup: {bak_path}")
-                        with open(bak_path, "rb") as f:
-                            payment_data = pickle.load(f)
-                    else:
-                        raise
+            payment_data = io_mgr.load_for_sensor(
+                asset_key_path=["worker", "worker_payments"],
+                partition_key=partition_key
+            )
 
-                if isinstance(payment_data, dict) and "payment_states" in payment_data:
-                    payment_states = payment_data["payment_states"]
-                    workers_due = []
+            if payment_data and isinstance(payment_data, dict) and "payment_states" in payment_data:
+                payment_states = payment_data["payment_states"]
+                workers_due = []
 
-                    for eth_address, state in payment_states.items():
-                        unpaid_fees = state.get("unpaid_fees", 0)
-                        if unpaid_fees >= payment_threshold_wei:
-                            workers_due.append({
-                                "eth_address": eth_address,
-                                "pending_fees": unpaid_fees,
-                                "pending_eth": unpaid_fees / 1e18
-                            })
+                for eth_address, state in payment_states.items():
+                    unpaid_fees = state.get("unpaid_fees", 0)
+                    if unpaid_fees >= payment_threshold_wei:
+                        workers_due.append({
+                            "eth_address": eth_address,
+                            "pending_fees": unpaid_fees,
+                            "pending_eth": unpaid_fees / 1e18
+                        })
 
-                    if workers_due:
-                        workers_due_by_partition[partition_key] = workers_due
-                        context.log.info(
-                            f"Found {len(workers_due)} workers due for payment totaling {sum(w['pending_eth'] for w in workers_due):.6f} ETH")
+                if workers_due:
+                    workers_due_by_partition[partition_key] = workers_due
+                    context.log.info(
+                        f"Found {len(workers_due)} workers due for payment totaling {sum(w['pending_eth'] for w in workers_due):.6f} ETH")
         except Exception as e:
             context.log.error(f"Error checking {partition_key}: {str(e)}")
 

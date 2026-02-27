@@ -396,13 +396,15 @@ def worker_payments(context, worker_fees):
 
     # Export payment events to a JSON file if any were generated
     if payment_events_generated:
-        # Create output directory if it doesn't exist
-        os.makedirs("payments", exist_ok=True)
+        # Write to the IO manager base dir so audit logs land on the same durable volume
+        base_dir = os.environ.get("IO_MANAGER_BASE_DIR", "data")
+        payments_dir = os.path.join(base_dir, "payments")
+        os.makedirs(payments_dir, exist_ok=True)
 
         # Generate timestamp for filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"payments_{node_type}_{region}_{timestamp}.json"
-        file_path = os.path.join("payments", filename)
+        file_path = os.path.join(payments_dir, filename)
 
         # Create payment data structure
         payment_data = {
