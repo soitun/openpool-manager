@@ -36,6 +36,7 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
 
     # Try to load existing worker fee states from previous materialization
     existing_states = {}
+    processed_event_ids = set()
     try:
         # Use Dagster's input context to load previous asset state
         from dagster import InputContext
@@ -48,11 +49,24 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
         previous_output = context.resources.io_manager.load_input(input_context)
         # Get worker states or default to empty dict
         existing_states = previous_output.get("worker_states", {}) if previous_output else {}
+        # Load previously processed event IDs for deduplication
+        processed_event_ids = previous_output.get("_processed_event_ids", set()) if previous_output else set()
+        if isinstance(processed_event_ids, list):
+            processed_event_ids = set(processed_event_ids)
         context.log.info(f"Loaded {len(existing_states)} existing worker fee states via IO manager")
+        context.log.info(f"Found {len(processed_event_ids)} previously processed event IDs")
     except Exception as e:
         context.log.warning(f"Could not load existing worker fee states: {str(e)}")
         context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
         existing_states = {}
+
+    # Deduplicate: filter out events we've already processed
+    new_events = [e for e in job_events if e.id not in processed_event_ids]
+    context.log.info(f"After deduplication: {len(new_events)} new events ({len(job_events) - len(new_events)} skipped)")
+
+    # Track newly processed event IDs
+    for event in new_events:
+        processed_event_ids.add(event.id)
 
     # Create a new worker states dictionary
     worker_states = {}
@@ -66,10 +80,10 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
             "worker_earnings": fee_state.get("worker_earnings", 0),
         }
 
-    # Process job events to update fee state
+    # Process only new (deduplicated) job events to update fee state
     total_pool_commission = 0
 
-    for event in job_events:
+    for event in new_events:
         # Extract ETH address and fees
         eth_address = event.get_eth_address()
         if not eth_address:
@@ -129,6 +143,7 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
     # Return data with both the worker states and supporting metadata
     return {
         "worker_states": worker_states,
+        "_processed_event_ids": processed_event_ids,
         "metadata": {
             "node_type": node_type,
             "region": region,

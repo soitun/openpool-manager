@@ -22,25 +22,11 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ---
 
-### 3. `worker_fees` has no event deduplication — re-processes all events from `processed_jobs`
+### 3. ~~`worker_fees` has no event deduplication — re-processes all events from `processed_jobs`~~ FIXED
 
-**File:** `openpool_management/assets/worker.py:34, 72-100`
+**Status:** FIXED — `worker.py` now loads `_processed_event_ids` from previous state, filters out already-processed events before accumulating fees, and persists the set in the returned state. Same pattern as `worker_performance_analytics`.
 
-`worker_fees` loads its previous cumulative state (lines 37-55), then iterates over **all** `processed_events` from its input (line 72), adding fees to the cumulative totals. This is correct only if `processed_jobs` returns exclusively *new* events each time.
-
-However, if `process_inbound_events_job` re-materializes `processed_jobs` and the auto-discovery fallback (`events.py:37-53`) picks the same latest S3 file, the same events are re-processed and fees are double-counted. The deduplication logic present in `worker_performance_analytics` (via `processed_event_ids` set) is completely absent from `worker_fees`.
-
-**Impact:** Fee inflation leading to overpayment.
-
-**Fix:** Add a `processed_event_ids` set to `worker_fees` state (same pattern as `worker_performance_analytics`). Filter out already-processed events before accumulating fees:
-
-```python
-processed_event_ids = set(existing_states.get("_processed_event_ids", []))
-new_events = [e for e in job_events if e.id not in processed_event_ids]
-for event in new_events:
-    processed_event_ids.add(event.id)
-    # ... accumulate fees ...
-```
+**File:** `openpool_management/assets/worker.py`
 
 ---
 
@@ -155,28 +141,11 @@ The `raw_events` asset does not specify `io_manager_key`. It returns `List[RawEv
 
 ---
 
-### 13. `S3Resource` creates a new boto3 client on every call
+### 13. ~~`S3Resource` creates a new boto3 client on every call~~ FIXED
 
-**File:** `openpool_management/resources.py:25-44`
+**Status:** FIXED — `S3Resource` now caches the boto3 client via `PrivateAttr(default=None)`. The client is created once on first call and reused for all subsequent S3 operations within the same resource instance.
 
-`S3Resource.client()` creates a fresh `boto3.client` each invocation. During `raw_events` processing of 250 files, `get_object()` is called 250 times, each creating a new client with new TCP connections and auth negotiation.
-
-**Impact:** Wasted connection setup time. Potential rate-limiting from the S3 endpoint. Slower ingest.
-
-**Fix:** Cache the client instance using `PrivateAttr`, same pattern as the `PaymentResource` fix:
-
-```python
-from pydantic import PrivateAttr
-
-class S3Resource(ConfigurableResource):
-    config: S3Config
-    _client: Optional[Any] = PrivateAttr(default=None)
-
-    def client(self):
-        if self._client is None:
-            self._client = boto3.client(...)
-        return self._client
-```
+**File:** `openpool_management/resources.py`
 
 ---
 
@@ -336,7 +305,7 @@ These files are also never read back by any part of the pipeline — they are wr
 |----------|---|--------|-----------|
 | **Critical** | 1 | FIXED | `AssetSelection.all()` triggering payments |
 | **Critical** | 2 | FIXED | Cursor advances before run succeeds |
-| **Critical** | 3 | OPEN | `worker_fees` event deduplication |
+| **Critical** | 3 | FIXED | `worker_fees` event deduplication |
 | **Critical** | 4 | FIXED | Payment idempotency (WAL) |
 | **Critical** | 5 | OPEN | Fragile `InputContext` self-loading |
 | **High** | 6 | OPEN | `processed_jobs` inconsistent state loading |
@@ -346,7 +315,7 @@ These files are also never read back by any part of the pipeline — they are wr
 | **High** | 10 | OPEN | Hardcoded `valid_combinations` duplication |
 | **Medium** | 11 | OPEN | `raw_events` not persisted by IO manager |
 | **Medium** | 12 | FIXED | Atomic writes in IO manager |
-| **Medium** | 13 | OPEN | S3 client created on every call |
+| **Medium** | 13 | FIXED | S3 client cached via PrivateAttr |
 | **Medium** | 14 | OPEN | `processed_event_ids` unbounded growth |
 | **Medium** | 15 | OPEN | No RPC retry/backoff |
 | **Medium** | 16 | OPEN | Gas price race condition (low risk on Arbitrum) |
@@ -358,14 +327,12 @@ These files are also never read back by any part of the pipeline — they are wr
 | **Low** | 22 | FIXED | Duplicate `os.makedirs` |
 | **New** | 23 | FIXED | S3 archival on success |
 
-### Progress: 7 FIXED, 1 PARTIAL, 15 OPEN
+### Progress: 9 FIXED, 1 PARTIAL, 13 OPEN
 
 ### Recommended Next Fixes
 
-1. **#3** — Event deduplication in `worker_fees` (CRITICAL — fee inflation → overpayment)
-2. **#5/#6** — Fragile `InputContext` self-loading (CRITICAL/HIGH — silent state loss across 5 assets)
-3. **#13** — Cache S3 boto3 client (MEDIUM — easy win, big perf improvement on 250-file batches)
-4. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
-5. **#9** — Keep disconnected workers in state (HIGH — data continuity)
-6. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
-7. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb)
+1. **#5/#6** — Fragile `InputContext` self-loading (CRITICAL/HIGH — silent state loss across 5 assets)
+2. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
+3. **#9** — Keep disconnected workers in state (HIGH — data continuity)
+4. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
+5. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, now affects both `worker_fees` and `worker_performance_analytics`)

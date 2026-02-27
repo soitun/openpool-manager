@@ -13,6 +13,7 @@ class S3Resource(ConfigurableResource):
     the OpenPool region/node_type directory structure.
     """
     config: S3Config
+    _client: Optional[Any] = PrivateAttr(default=None)
 
     @property
     def bucket(self) -> str:
@@ -25,13 +26,16 @@ class S3Resource(ConfigurableResource):
 
     def client(self):
         """
-        Returns a configured boto3 S3 client.
+        Returns a configured boto3 S3 client (cached for reuse).
         Ensures proper configuration for S3-compatible storage.
         """
+        if self._client is not None:
+            return self._client
+
         # Create the S3 client with proper configuration
         addressing_style = 'path' if self.config.path_style else 'virtual'
 
-        return boto3.client(
+        self._client = boto3.client(
             "s3",
             region_name=self.config.aws_region,
             endpoint_url=self.config.endpoint_url,
@@ -43,6 +47,7 @@ class S3Resource(ConfigurableResource):
                 s3={'addressing_style': addressing_style}
             )
         )
+        return self._client
 
     def get_paginator(self, operation_name):
         """
