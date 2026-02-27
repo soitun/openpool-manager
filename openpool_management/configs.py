@@ -2,18 +2,9 @@
 """
 from dagster import Config,EnvVar
 from pydantic import Field
-from typing import Optional,List
+from typing import Optional
 
 # -------------------- Configuration --------------------
-
-class WorkerPaymentConfig(Config):
-    """Configuration for payments"""
-    payment_threshold_wei: int = Field(
-        default_factory=lambda: int(EnvVar("PAYMENT_THRESHOLD_WEI").get_value("10000000000000000"))  # 0.1 ETH in Wei
-    )
-    dry_run: bool = Field(
-        default_factory=lambda: EnvVar("PAYMENT_PROCESSING_DRY_RUN").get_value("false")
-    )
 
 class S3Config(Config):
     """Configuration for S3 resource access"""
@@ -26,9 +17,6 @@ class S3Config(Config):
     archive_bucket: Optional[str] = None  # Separate bucket for archived files (no TTL)
     archive_prefix: str = "archive/"  # Prefix for archived files
 
-class RawEventsConfig(Config):
-    """Configuration for raw events asset"""
-    s3_keys: Optional[List[str]] = None
 class PaymentConfig(Config):
     """Configuration for payment processing with blockchain capability"""
     payment_threshold_wei: int = Field(
@@ -68,8 +56,3 @@ class PoolConfig(Config):
         default_factory=lambda: float(EnvVar("POOL_COMMISSION_RATE").get_value("0.25"))  # 25% pool commission
     )
 
-class IOManagerConfig(Config):
-    """Configuration for IO manager"""
-    base_dir: str = Field(
-        default_factory=lambda: EnvVar("IO_MANAGER_BASE_DIR").get_value("data")
-    )

@@ -1,9 +1,13 @@
 from dagster import asset, AssetExecutionContext, AssetIn
 from typing import Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from openpool_management.models import RawEvent, parse_partition_key
 from openpool_management.partitions import multi_partitions
+
+# Overlap buffer for event deduplication — events within this window of the
+# high-water mark are tracked by ID to catch out-of-order arrivals.
+_DEDUP_OVERLAP = timedelta(minutes=30)
 
 @asset(
     key_prefix=["worker"],
@@ -36,29 +40,55 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
 
     # Load existing worker fee states from previous materialization
     existing_states = {}
-    processed_event_ids = set()
+    high_water_mark = None
+    recent_event_ids = set()
     try:
         previous_output = context.resources.io_manager.load_previous_output(context)
         if previous_output:
             existing_states = previous_output.get("worker_states", {})
-            processed_event_ids = previous_output.get("_processed_event_ids", set())
-            if isinstance(processed_event_ids, list):
-                processed_event_ids = set(processed_event_ids)
+            high_water_mark = previous_output.get("_high_water_mark")
+            recent_event_ids = previous_output.get("_recent_event_ids", set())
+            if isinstance(recent_event_ids, list):
+                recent_event_ids = set(recent_event_ids)
             context.log.info(f"Loaded {len(existing_states)} existing worker fee states")
-            context.log.info(f"Found {len(processed_event_ids)} previously processed event IDs")
+            context.log.info(f"High water mark: {high_water_mark}, {len(recent_event_ids)} recent event IDs in overlap window")
         else:
             context.log.info("No previous worker fee state found — starting fresh")
     except Exception as e:
         context.log.warning(f"Could not load existing worker fee states: {str(e)}")
         existing_states = {}
 
-    # Deduplicate: filter out events we've already processed
-    new_events = [e for e in job_events if e.id not in processed_event_ids]
-    context.log.info(f"After deduplication: {len(new_events)} new events ({len(job_events) - len(new_events)} skipped)")
+    # Deduplicate using high-water-mark + bounded overlap window
+    if high_water_mark:
+        cutoff = high_water_mark - _DEDUP_OVERLAP
+        new_events = [
+            e for e in job_events
+            if e.dt > cutoff and e.id not in recent_event_ids
+        ]
+        skipped_old = sum(1 for e in job_events if e.dt <= cutoff)
+        skipped_dup = len(job_events) - len(new_events) - skipped_old
+        context.log.info(
+            f"After deduplication: {len(new_events)} new events "
+            f"({skipped_old} before cutoff, {skipped_dup} duplicate in overlap window)"
+        )
+    else:
+        new_events = job_events
+        context.log.info(f"No high water mark — processing all {len(new_events)} events")
 
-    # Track newly processed event IDs
+    # Update high water mark and bounded recent IDs
+    new_high_water_mark = high_water_mark
     for event in new_events:
-        processed_event_ids.add(event.id)
+        if new_high_water_mark is None or event.dt > new_high_water_mark:
+            new_high_water_mark = event.dt
+        recent_event_ids.add(event.id)
+
+    # Prune recent_event_ids to only keep IDs within the overlap window
+    if new_high_water_mark:
+        overlap_cutoff = new_high_water_mark - _DEDUP_OVERLAP
+        recent_event_ids = {
+            eid for eid in recent_event_ids
+            if any(e.id == eid and e.dt > overlap_cutoff for e in job_events)
+        } | {e.id for e in new_events if e.dt > overlap_cutoff}
 
     # Create a new worker states dictionary
     worker_states = {}
@@ -135,7 +165,8 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
     # Return data with both the worker states and supporting metadata
     return {
         "worker_states": worker_states,
-        "_processed_event_ids": processed_event_ids,
+        "_high_water_mark": new_high_water_mark,
+        "_recent_event_ids": recent_event_ids,
         "metadata": {
             "node_type": node_type,
             "region": region,

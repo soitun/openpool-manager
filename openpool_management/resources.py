@@ -231,24 +231,28 @@ class Web3Client:
         # Get nonce for the transaction (with retry)
         nonce = _retry_rpc(lambda: self.w3.eth.get_transaction_count(self.account.address, 'pending'))
 
-        # Get current gas price (with retry)
+        # Get current gas price (with retry) and compute EIP-1559 fee fields
         gas_price = _retry_rpc(lambda: self.w3.eth.gas_price)
+        max_fee = min(gas_price * 2, self.config.max_gas_price_wei)
+        max_priority_fee = gas_price
 
-        # Check against gas price threshold
         if gas_price > self.config.max_gas_price_wei:
             raise ValueError(
                 f"Gas price too high: {Web3.from_wei(gas_price, 'gwei')} gwei, "
                 f"maximum: {Web3.from_wei(self.config.max_gas_price_wei, 'gwei')} gwei"
             )
 
-        # Prepare transaction
+        # Prepare EIP-1559 (type 2) transaction — maxFeePerGas caps the cost,
+        # eliminating the race between gas check and send_raw_transaction.
         tx = {
             'nonce': nonce,
             'to': to_address,
             'value': amount_wei,
             'gas': self.config.gas_limit,
-            'gasPrice': gas_price,
-            'chainId': self.config.chain_id
+            'maxFeePerGas': max_fee,
+            'maxPriorityFeePerGas': max_priority_fee,
+            'chainId': self.config.chain_id,
+            'type': 2
         }
 
         # Sign transaction - using the private key we got during setup

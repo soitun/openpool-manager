@@ -114,18 +114,11 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ---
 
-### 14. `worker_performance_analytics` accumulates `processed_event_ids` forever
+### 14. ~~`worker_performance_analytics` accumulates `processed_event_ids` forever~~ FIXED
 
-**File:** `openpool_management/assets/metrics.py:77-88`
+**Status:** FIXED — Replaced unbounded `processed_event_ids` set with a high-water-mark timestamp + bounded 30-minute overlap window in both `worker_fees` and `worker_performance_analytics`. Events older than the cutoff are skipped by timestamp; events within the window are deduped by ID. The `_recent_event_ids` set is pruned each run to only contain IDs within the overlap window. Memory is now O(events-in-30-minutes) instead of O(all-events-ever). IO manager `_get_empty_fallback` updated to match new keys.
 
-The `processed_event_ids` set grows unboundedly across materializations. Over months of operation with high event volume, this set becomes very large, increasing pickle file size and deserialization time.
-
-**Impact:** Gradual performance degradation. Eventually, loading the pickle file may take significant time or memory.
-
-**Fix:** Implement a rotation strategy:
-- Keep only event IDs from the last N materializations or last N days.
-- Or use a Bloom filter for approximate deduplication with bounded memory.
-- Or, if events are guaranteed to arrive in chronological order, track only the latest timestamp and deduplicate by timestamp comparison.
+**Files:** `openpool_management/assets/worker.py`, `openpool_management/assets/metrics.py`, `openpool_management/io_manager.py`
 
 ---
 
@@ -137,52 +130,29 @@ The `processed_event_ids` set grows unboundedly across materializations. Over mo
 
 ---
 
-### 16. Gas price check race condition
+### 16. ~~Gas price check race condition~~ FIXED
 
-**File:** `openpool_management/resources.py:192-200, 203-210`
+**Status:** FIXED — Switched to EIP-1559 (type 2) transactions with `maxFeePerGas` = `min(gas_price * 2, max_gas_price_wei)` and `maxPriorityFeePerGas` = `gas_price`. The `maxFeePerGas` cap eliminates the race between gas check and `send_raw_transaction` — the protocol enforces the ceiling natively. Explicit pre-check retained as a fast-fail for obviously high gas.
 
-Gas price is fetched and checked against `max_gas_price_wei`, then the same value is used in the transaction dict. Between the check and the actual `send_raw_transaction`, network conditions could change.
-
-**Impact:** Low risk on Arbitrum (stable low fees), but the pattern is fragile for chains with volatile gas markets. A spike between check and send could result in a stuck transaction.
-
-**Fix:** On Arbitrum this is acceptable. For robustness, consider using EIP-1559 fields (`maxFeePerGas`, `maxPriorityFeePerGas`) which let the protocol handle gas price fluctuation, or re-check gas price immediately before signing.
+**File:** `openpool_management/resources.py`
 
 ---
 
 ## LOW — Code Quality / Maintenance
 
-### 17. Unused Pydantic models
+### 17. ~~Unused Pydantic models~~ FIXED
 
-**File:** `openpool_management/models.py`
+**Status:** FIXED — Deleted `PaymentRecord`, `FeeRecord`, `WorkerFeeState`, `WorkerState`, `WorkerPaymentState`, and `PaymentEvent` from `models.py`. Cleaned up unused `Dict`/`List` imports. Removed stale `WorkerState` import from `metrics.py`.
 
-The following models are defined but never imported or used by any asset, resource, or sensor:
-- `PaymentRecord`
-- `FeeRecord`
-- `WorkerFeeState`
-- `WorkerState`
-- `WorkerPaymentState`
-- `PaymentEvent`
-
-All assets work with plain dicts instead.
-
-**Impact:** Confusion about canonical data formats. Maintenance burden keeping unused models in sync.
-
-**Fix:** Either adopt these models in the assets (preferred — gives you validation and IDE support) or remove them. If keeping them as documentation, add a clear comment noting they are reference schemas.
+**Files:** `openpool_management/models.py`, `openpool_management/assets/metrics.py`
 
 ---
 
-### 18. Unused config classes
+### 18. ~~Unused config classes~~ FIXED
+
+**Status:** FIXED — Deleted `WorkerPaymentConfig`, `RawEventsConfig`, and `IOManagerConfig` from `configs.py`. Cleaned up unused `List` import.
 
 **File:** `openpool_management/configs.py`
-
-The following config classes are defined but never imported or used:
-- `WorkerPaymentConfig`
-- `RawEventsConfig`
-- `IOManagerConfig`
-
-**Impact:** Dead code, potential confusion.
-
-**Fix:** Remove or integrate into the pipeline.
 
 ---
 
@@ -245,22 +215,17 @@ The following config classes are defined but never imported or used:
 | **Medium** | 11 | FIXED | `raw_events` persisted via IO manager |
 | **Medium** | 12 | FIXED | Atomic writes in IO manager |
 | **Medium** | 13 | FIXED | S3 client cached via PrivateAttr |
-| **Medium** | 14 | OPEN | `processed_event_ids` unbounded growth |
+| **Medium** | 14 | FIXED | Bounded dedup with high-water mark + 30min window |
 | **Medium** | 15 | FIXED | RPC retry/backoff with exponential backoff |
-| **Medium** | 16 | OPEN | Gas price race condition (low risk on Arbitrum) |
-| **Low** | 17 | OPEN | Unused Pydantic models |
-| **Low** | 18 | OPEN | Unused config classes |
+| **Medium** | 16 | FIXED | EIP-1559 transactions with maxFeePerGas cap |
+| **Low** | 17 | FIXED | Deleted unused Pydantic models |
+| **Low** | 18 | FIXED | Deleted unused config classes |
 | **Low** | 19 | FIXED | Removed unused `run_config` from payment sensor |
 | **Low** | 20 | FIXED | `active_workers` computed from final merged dict |
 | **Low** | 21 | FIXED | `payments/` writes to IO_MANAGER_BASE_DIR |
 | **Low** | 22 | FIXED | Duplicate `os.makedirs` |
 | **New** | 23 | FIXED | S3 archival on success |
 
-### Progress: 19 FIXED, 4 OPEN
+### Progress: 23 FIXED, 0 OPEN
 
-### Remaining Fixes
-
-1. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, affects both `worker_fees` and `worker_performance_analytics`)
-2. **#16** — Gas price race condition (MEDIUM — low risk on Arbitrum, consider EIP-1559 for other chains)
-3. **#17** — Remove or adopt unused Pydantic models (LOW — dead code cleanup)
-4. **#18** — Remove or integrate unused config classes (LOW — dead code cleanup)
+All issues from the original review have been addressed.

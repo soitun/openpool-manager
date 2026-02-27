@@ -72,7 +72,8 @@ class PartitionedFilesystemIOManager(IOManager):
                 "transcode_performance": None,
                 "ai_performance": None,
                 "ai_model_pipeline_rankings": {},
-                "processed_event_ids": set()
+                "_high_water_mark": None,
+                "_recent_event_ids": set()
             }
         elif "worker_summary_analytics" in asset_key_str:
             return {"workers": {}, "aggregates": {"total_workers": 0, "active_workers": 0, "total_fees": 0}}

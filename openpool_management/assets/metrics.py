@@ -2,13 +2,17 @@
 from dagster import asset, AssetIn, MetadataValue
 from typing import Dict
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 import numpy as np
 
-from openpool_management.models import WorkerState, parse_partition_key
+from openpool_management.models import parse_partition_key
 from openpool_management.partitions import multi_partitions
+
+# Overlap buffer for event deduplication — events within this window of the
+# high-water mark are tracked by ID to catch out-of-order arrivals.
+_DEDUP_OVERLAP = timedelta(minutes=30)
 
 
 @asset(
@@ -42,7 +46,8 @@ def worker_performance_analytics(context, processed_jobs: dict):
             "transcode_performance": pd.DataFrame(),
             "ai_performance": pd.DataFrame(),
             "ai_model_pipeline_rankings": {},
-            "processed_event_ids": set()  # Add tracking of processed event IDs
+            "_high_water_mark": None,
+            "_recent_event_ids": set()
         }
 
     # Log the first few events to help debug
@@ -64,19 +69,47 @@ def worker_performance_analytics(context, processed_jobs: dict):
         context.log.warning(f"Could not load previous performance analytics: {str(e)}")
         previous_results = None
 
-    # Get previously processed event IDs to avoid double counting
-    processed_event_ids = set()
-    if previous_results and "processed_event_ids" in previous_results:
-        processed_event_ids = previous_results["processed_event_ids"]
-        context.log.info(f"Found {len(processed_event_ids)} previously processed event IDs")
+    # Load bounded dedup state (high-water mark + recent IDs in overlap window)
+    high_water_mark = None
+    recent_event_ids = set()
+    if previous_results:
+        high_water_mark = previous_results.get("_high_water_mark")
+        recent_event_ids = previous_results.get("_recent_event_ids", set())
+        if isinstance(recent_event_ids, list):
+            recent_event_ids = set(recent_event_ids)
+        context.log.info(f"High water mark: {high_water_mark}, {len(recent_event_ids)} recent event IDs in overlap window")
 
-    # Filter out previously processed events
-    new_events = [event for event in processed_events if event.id not in processed_event_ids]
-    context.log.info(f"After filtering, found {len(new_events)} new events to process")
+    # Deduplicate using high-water-mark + bounded overlap window
+    if high_water_mark:
+        cutoff = high_water_mark - _DEDUP_OVERLAP
+        new_events = [
+            e for e in processed_events
+            if e.dt > cutoff and e.id not in recent_event_ids
+        ]
+        skipped_old = sum(1 for e in processed_events if e.dt <= cutoff)
+        skipped_dup = len(processed_events) - len(new_events) - skipped_old
+        context.log.info(
+            f"After deduplication: {len(new_events)} new events "
+            f"({skipped_old} before cutoff, {skipped_dup} duplicate in overlap window)"
+        )
+    else:
+        new_events = processed_events
+        context.log.info(f"No high water mark — processing all {len(new_events)} events")
 
-    # Update our processed event ID set with new event IDs
+    # Update high water mark and bounded recent IDs
+    new_high_water_mark = high_water_mark
     for event in new_events:
-        processed_event_ids.add(event.id)
+        if new_high_water_mark is None or event.dt > new_high_water_mark:
+            new_high_water_mark = event.dt
+        recent_event_ids.add(event.id)
+
+    # Prune recent_event_ids to only keep IDs within the overlap window
+    if new_high_water_mark:
+        overlap_cutoff = new_high_water_mark - _DEDUP_OVERLAP
+        recent_event_ids = {
+            eid for eid in recent_event_ids
+            if any(e.id == eid and e.dt > overlap_cutoff for e in processed_events)
+        } | {e.id for e in new_events if e.dt > overlap_cutoff}
 
     # Process based on node type
     if node_type == "transcode":
@@ -91,8 +124,9 @@ def worker_performance_analytics(context, processed_jobs: dict):
             "ai_model_pipeline_rankings": {}
         }
 
-    # Add the processed event IDs to the results
-    results["processed_event_ids"] = processed_event_ids
+    # Persist bounded dedup state
+    results["_high_water_mark"] = new_high_water_mark
+    results["_recent_event_ids"] = recent_event_ids
 
     return results
 
