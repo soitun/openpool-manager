@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install \
+    dagster \
+    dagster-postgres \
+    dagster-docker
+
+# Set working directory
+WORKDIR /opt/dagster/app
+
+# Copy user code
+COPY . .
+
+# Copy requirements and install dependencies
+RUN pip install .
+
+# Default command (overridable via docker-compose)
+CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m", "openpool_management.definitions"]

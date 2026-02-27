@@ -1,0 +1,58 @@
+"""
+"""
+from dagster import Config,EnvVar
+from pydantic import Field
+from typing import Optional
+
+# -------------------- Configuration --------------------
+
+class S3Config(Config):
+    """Configuration for S3 resource access"""
+    bucket: str = "raw-events"  # Default bucket name
+    endpoint_url: str = "https://obj-store-console.xode.app/"  # S3 endpoint
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_region: str = "us-east-1"  # Default region for S3 client
+    path_style: bool = True  # Use path-style addressing
+    archive_bucket: Optional[str] = None  # Separate bucket for archived files (no TTL)
+    archive_prefix: str = "archive/"  # Prefix for archived files
+
+class PaymentConfig(Config):
+    """Configuration for payment processing with blockchain capability"""
+    payment_threshold_wei: int = Field(
+        default_factory=lambda: int(EnvVar("PAYMENT_THRESHOLD_WEI").get_value("10000000000000000"))  # 0.01 ETH in Wei
+    )
+    min_payment_interval_seconds: int = Field(
+        default_factory=lambda: int(EnvVar("MIN_PAYMENT_INTERVAL_SECONDS").get_value("86400"))  # 24 hours in seconds
+    )
+    # Blockchain RPC endpoint
+    rpc_endpoint: str = Field(
+        default_factory=lambda: EnvVar("ETH_RPC_ENDPOINT").get_value("https://arb1.arbitrum.io/rpc")
+    )
+    # Private key or path to keystore file
+    private_key: str = Field(
+        default_factory=lambda: EnvVar("ETH_PRIVATE_KEY").get_value("")
+    )
+    # Password for keystore file (can be direct password or path to password file)
+    keystore_password: str = Field(
+        default_factory=lambda: EnvVar("ETH_KEYSTORE_PASSWORD").get_value("")
+    )
+    # Maximum gas price in wei
+    max_gas_price_wei: int = Field(
+        default_factory=lambda: int(EnvVar("MAX_GAS_PRICE_WEI").get_value("5000000000000"))
+    )
+    # Default gas limit
+    gas_limit: int = Field(
+        default_factory=lambda: int(EnvVar("GAS_LIMIT").get_value("1000000"))
+    )
+    # Chain ID for the network
+    chain_id: int = Field(
+        default_factory=lambda: int(EnvVar("CHAIN_ID").get_value("42161"))
+    )
+
+class PoolConfig(Config):
+    """Configuration for pool fee structure"""
+    commission_rate: float = Field(
+        default_factory=lambda: float(EnvVar("POOL_COMMISSION_RATE").get_value("0.25"))  # 25% pool commission
+    )
+

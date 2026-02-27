@@ -1,0 +1,17 @@
+.git
+.claude
+.idea/
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.env
+.tmp*
+payments/
+data/
+openpool-venv/
+build/
+dev_daghome/
+**-keys/
+openpool_management_tests/
