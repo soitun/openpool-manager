@@ -49,7 +49,8 @@ run_launcher:
       - S3_SENSOR_INTERVAL_SECONDS
       - PAYMENT_SENSOR_INTERVAL_SECONDS
       - IO_MANAGER_BASE_DIR
-      - PAYMENT_OUTPUT_DIR
+      - S3_ARCHIVE_BUCKET
+      - S3_ARCHIVE_PREFIX
     network: NETWORK_PLACEHOLDER
     container_kwargs:
       volumes:

@@ -45,8 +45,8 @@ defs = Definitions(
         "io_manager": partitioned_filesystem_io_manager,
         "s3": S3Resource(
             config=S3Config(
-                bucket=os.environ.get("S3_BUCKET"),
-                endpoint_url=os.environ.get("S3_ENDPOINT"),
+                bucket=os.environ.get("S3_BUCKET", "raw-events"),
+                endpoint_url=os.environ.get("S3_ENDPOINT", "https://obj-store-console.xode.app/"),
                 aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
                 aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
                 aws_region=os.environ.get("AWS_REGION", "us-east-1"),
@@ -57,8 +57,8 @@ defs = Definitions(
         ),
         "s3_metrics": S3Resource(
             config=S3Config(
-                bucket=os.environ.get("S3_METRICS_BUCKET"),
-                endpoint_url=os.environ.get("S3_ENDPOINT"),
+                bucket=os.environ.get("S3_METRICS_BUCKET", "open-pool-metrics"),
+                endpoint_url=os.environ.get("S3_ENDPOINT", "https://obj-store-console.xode.app/"),
                 aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
                 aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
                 aws_region=os.environ.get("AWS_REGION", "us-east-1"),

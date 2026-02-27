@@ -20,5 +20,5 @@ COPY . .
 # Copy requirements and install dependencies
 RUN pip install .
 
-# Command to run
-#CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m","openpool_management.definitions"]
+# Default command (overridable via docker-compose)
+CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m", "openpool_management.definitions"]
