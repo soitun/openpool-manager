@@ -79,6 +79,33 @@ class PartitionedFilesystemIOManager(IOManager):
         else:
             return {}
 
+    def load_previous_output(self, context):
+        """Load the previous output for this asset/partition directly from disk.
+
+        Unlike load_input, this accepts an AssetExecutionContext directly,
+        avoiding the need to construct a fragile InputContext. Returns None
+        if no previous output exists.
+        """
+        path = self._get_path(context)
+
+        if not os.path.exists(path):
+            return None
+
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except Exception as e:
+            logging.error(f"Error loading previous output from {path}: {e}")
+            bak_path = path + ".bak"
+            if os.path.exists(bak_path):
+                try:
+                    with open(bak_path, "rb") as f:
+                        logging.info(f"Recovered from backup: {bak_path}")
+                        return pickle.load(f)
+                except Exception:
+                    logging.error(f"Backup also corrupt: {bak_path}")
+            return None
+
     def handle_output(self, context, obj):
         """Save object to file using atomic write (temp file + fsync + rename)."""
         logging.info(f"Handling output for {context.asset_key}")

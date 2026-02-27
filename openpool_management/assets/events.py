@@ -146,27 +146,18 @@ def processed_jobs(context: AssetExecutionContext, raw_events: List[RawEvent]) -
     # Initialize list to store all enriched processed events
     enriched_processed_events = []
 
-    # Try to load existing pending jobs from previous materialization using IO manager
+    # Load existing pending jobs from previous materialization
     pending_jobs = {}
     if node_type == "ai":
         try:
-            # Get the previously materialized value for this asset and partition
-            previous_output = context.instance.get_latest_materialization_event(
-                asset_key=context.asset_key,
-                partition_key=context.partition_key
-            )
-
-            if previous_output:
-                # Load the data using the IO manager
-                prev_data = context.resources.io_manager.load_input(context)
-                if prev_data and isinstance(prev_data, dict):
-                    pending_jobs = prev_data.get("pending_jobs", {})
-                    context.log.info(f"Loaded {len(pending_jobs)} pending received jobs from previous materialization")
+            prev_data = context.resources.io_manager.load_previous_output(context)
+            if prev_data and isinstance(prev_data, dict):
+                pending_jobs = prev_data.get("pending_jobs", {})
+                context.log.info(f"Loaded {len(pending_jobs)} pending received jobs from previous materialization")
             else:
-                context.log.info("No previous materialization found")
+                context.log.info("No previous materialization found — starting fresh")
         except Exception as e:
             context.log.warning(f"Could not load pending jobs: {str(e)}")
-            context.log.info("Starting with empty pending jobs state")
             pending_jobs = {}
 
     # Handle each node type appropriately

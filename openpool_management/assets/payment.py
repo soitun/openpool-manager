@@ -155,35 +155,24 @@ def worker_payments(context, worker_fees):
         f"[{node_type}/{region}] Payment threshold: {payment_threshold_wei / 1e18:.6f} ETH"
     )
 
-    # Try to load existing payment states from previous materialization
+    # Load existing payment states from previous materialization
     existing_payment_states = {}
     try:
-        # Use Dagster's input context to load previous asset state
-        from dagster import InputContext
-        input_context = InputContext(
-            asset_key=context.asset_key,
-            partition_key=context.partition_key,
-            metadata={}
-        )
-        # Load using the IO manager
-        previous_output = context.resources.io_manager.load_input(input_context)
-        # Get payment states or default to empty dict
-        existing_payment_states = previous_output.get("payment_states", {}) if previous_output else {}
-
-        # Debug logging of existing payment states
-        context.log.info(f"[{node_type}/{region}] Loaded {len(existing_payment_states)} existing payment states")
-        if existing_payment_states:
-            total_paid = sum(s.get("total_fees_paid", 0) for s in existing_payment_states.values())
-            total_earned = sum(s.get("total_fees_earned", 0) for s in existing_payment_states.values())
-            context.log.info(
-                f"[{node_type}/{region}] Prior state: {total_earned / 1e18:.6f} ETH earned, "
-                f"{total_paid / 1e18:.6f} ETH paid, {(total_earned - total_paid) / 1e18:.6f} ETH unpaid"
-            )
+        previous_output = context.resources.io_manager.load_previous_output(context)
+        if previous_output:
+            existing_payment_states = previous_output.get("payment_states", {})
+            context.log.info(f"[{node_type}/{region}] Loaded {len(existing_payment_states)} existing payment states")
+            if existing_payment_states:
+                total_paid = sum(s.get("total_fees_paid", 0) for s in existing_payment_states.values())
+                total_earned = sum(s.get("total_fees_earned", 0) for s in existing_payment_states.values())
+                context.log.info(
+                    f"[{node_type}/{region}] Prior state: {total_earned / 1e18:.6f} ETH earned, "
+                    f"{total_paid / 1e18:.6f} ETH paid, {(total_earned - total_paid) / 1e18:.6f} ETH unpaid"
+                )
+        else:
+            context.log.info(f"[{node_type}/{region}] No previous payment state found — starting fresh")
     except Exception as e:
         context.log.warning(f"[{node_type}/{region}] Could not load existing payment states: {str(e)}")
-        context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
-        import traceback
-        context.log.warning(f"Traceback: {traceback.format_exc()}")
         existing_payment_states = {}
 
     # Initialize new payment states dictionary

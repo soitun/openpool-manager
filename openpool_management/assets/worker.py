@@ -34,30 +34,22 @@ def worker_fees(context: AssetExecutionContext, processed_jobs: dict) -> dict:
     job_events = [e for e in processed_events if e.event_type == "job-processed"]
     context.log.info(f"Found {len(job_events)} job processed events")
 
-    # Try to load existing worker fee states from previous materialization
+    # Load existing worker fee states from previous materialization
     existing_states = {}
     processed_event_ids = set()
     try:
-        # Use Dagster's input context to load previous asset state
-        from dagster import InputContext
-        input_context = InputContext(
-            asset_key=context.asset_key,
-            partition_key=context.partition_key,
-            metadata={}
-        )
-        # Load using the IO manager
-        previous_output = context.resources.io_manager.load_input(input_context)
-        # Get worker states or default to empty dict
-        existing_states = previous_output.get("worker_states", {}) if previous_output else {}
-        # Load previously processed event IDs for deduplication
-        processed_event_ids = previous_output.get("_processed_event_ids", set()) if previous_output else set()
-        if isinstance(processed_event_ids, list):
-            processed_event_ids = set(processed_event_ids)
-        context.log.info(f"Loaded {len(existing_states)} existing worker fee states via IO manager")
-        context.log.info(f"Found {len(processed_event_ids)} previously processed event IDs")
+        previous_output = context.resources.io_manager.load_previous_output(context)
+        if previous_output:
+            existing_states = previous_output.get("worker_states", {})
+            processed_event_ids = previous_output.get("_processed_event_ids", set())
+            if isinstance(processed_event_ids, list):
+                processed_event_ids = set(processed_event_ids)
+            context.log.info(f"Loaded {len(existing_states)} existing worker fee states")
+            context.log.info(f"Found {len(processed_event_ids)} previously processed event IDs")
+        else:
+            context.log.info("No previous worker fee state found — starting fresh")
     except Exception as e:
         context.log.warning(f"Could not load existing worker fee states: {str(e)}")
-        context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
         existing_states = {}
 
     # Deduplicate: filter out events we've already processed
@@ -188,24 +180,17 @@ def worker_connections(context: AssetExecutionContext, raw_events: List[RawEvent
         f"and {len(reset_events)} reset events"
     )
 
-    # Try to load existing worker states from previous materialization
+    # Load existing worker states from previous materialization
     existing_states = {}
     try:
-        # CHANGED: Use Dagster's input context to load previous asset state
-        from dagster import InputContext
-        input_context = InputContext(
-            asset_key=context.asset_key,
-            partition_key=context.partition_key,
-            metadata={}
-        )
-        # Load using the IO manager
-        previous_output = context.resources.io_manager.load_input(input_context)
-        # Get worker states or default to empty dict
-        existing_states = previous_output.get("worker_states", {}) if previous_output else {}
-        context.log.info(f"Loaded {len(existing_states)} existing worker connection states via IO manager")
+        previous_output = context.resources.io_manager.load_previous_output(context)
+        if previous_output:
+            existing_states = previous_output.get("worker_states", {})
+            context.log.info(f"Loaded {len(existing_states)} existing worker connection states")
+        else:
+            context.log.info("No previous worker connection state found — starting fresh")
     except Exception as e:
         context.log.warning(f"Could not load existing worker states: {str(e)}")
-        context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
         existing_states = {}
 
     # Create a clean worker states dictionary

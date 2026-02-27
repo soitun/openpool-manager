@@ -52,25 +52,16 @@ def worker_performance_analytics(context, processed_jobs: dict):
 
     context.log.info(f"Analyzing worker performance for {node_type}/{region}")
 
-    # Try to load previous results for incremental analytics
+    # Load previous results for incremental analytics
     previous_results = None
     try:
-        # Use Dagster's input context to load previous asset state
-        from dagster import InputContext
-        input_context = InputContext(
-            asset_key=context.asset_key,
-            partition_key=context.partition_key,
-            metadata={}
-        )
-        # Load using the IO manager
-        previous_results = context.resources.io_manager.load_input(input_context)
+        previous_results = context.resources.io_manager.load_previous_output(context)
         if previous_results:
-            context.log.info(f"Loaded previous performance analytics via IO manager")
+            context.log.info(f"Loaded previous performance analytics")
         else:
-            context.log.info(f"No previous performance analytics found - starting fresh")
+            context.log.info(f"No previous performance analytics found — starting fresh")
     except Exception as e:
         context.log.warning(f"Could not load previous performance analytics: {str(e)}")
-        context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
         previous_results = None
 
     # Get previously processed event IDs to avoid double counting
@@ -477,25 +468,16 @@ def worker_summary_analytics(
     pool_commission_rate = context.resources.pool.get_commission_rate()
     payment_threshold_wei = context.resources.payment_processor.get_payment_threshold()
 
-    # Try to load previous summary for incremental processing
+    # Load previous summary for incremental processing
     previous_summary = None
     try:
-        # CHANGED: Use Dagster's input context to load previous asset state
-        from dagster import InputContext
-        input_context = InputContext(
-            asset_key=context.asset_key,
-            partition_key=context.partition_key,
-            metadata={}
-        )
-        # Load using the IO manager
-        previous_summary = context.resources.io_manager.load_input(input_context)
+        previous_summary = context.resources.io_manager.load_previous_output(context)
         if previous_summary:
-            context.log.info(f"Loaded previous worker summary via IO manager")
+            context.log.info(f"Loaded previous worker summary")
         else:
-            context.log.info(f"No previous worker summary found - starting fresh")
+            context.log.info(f"No previous worker summary found — starting fresh")
     except Exception as e:
         context.log.warning(f"Could not load previous worker summary: {str(e)}")
-        context.log.warning(f"Exception details: {type(e).__name__}: {str(e)}")
         previous_summary = None
 
     # Extract data from nested structures

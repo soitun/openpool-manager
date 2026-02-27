@@ -38,39 +38,21 @@ Comprehensive review of the Dagster pipeline identifying defects, data-loss vect
 
 ---
 
-### 5. `worker_payments` self-loads via raw `InputContext` — fragile and incorrect context
+### 5. ~~`worker_payments` self-loads via raw `InputContext` — fragile and incorrect context~~ FIXED
 
-**File:** `openpool_management/assets/payment.py:41-48`
+**Status:** FIXED — Added `load_previous_output(context)` method to `PartitionedFilesystemIOManager` that accepts `AssetExecutionContext` directly (which already has `.asset_key`, `.partition_key`, `.has_partition_key`). All 5 assets (`worker_fees`, `worker_connections`, `worker_payments`, `worker_performance_analytics`, `worker_summary_analytics`) now use this method instead of constructing a bare `InputContext`. Includes `.bak` recovery. Returns `None` when no previous state exists.
 
-The asset manually constructs a bare `InputContext` to load its own previous output. This bypasses Dagster's dependency graph. The `InputContext` is constructed with minimal metadata (`metadata={}`), and the IO manager's `_get_path` depends on `context.asset_key` and `context.partition_key` — but a manually constructed `InputContext` may not wire these identically to a real Dagster-provided context.
-
-If the path resolution diverges, the asset silently starts from empty state, **losing all payment history**.
-
-The same fragile pattern appears in:
-- `worker_fees` — `worker.py:40-48`
-- `worker_connections` — `worker.py:180-188`
-- `worker_performance_analytics` — `metrics.py:59-66`
-- `worker_summary_analytics` — `metrics.py:484-491`
-
-**Impact:** Silent state loss across any of these assets if Dagster's `InputContext` API changes or if the context attributes don't match what the IO manager expects.
-
-**Fix:** Use Dagster's `self_dependent_asset` pattern or explicitly declare each asset as depending on its own previous partition output via `AssetIn`. Alternatively, use the IO manager directly with a manually constructed path that mirrors `_get_path` logic — but encapsulate this in a shared helper to keep it in sync.
+**Files:** `openpool_management/io_manager.py`, `openpool_management/assets/worker.py`, `openpool_management/assets/payment.py`, `openpool_management/assets/metrics.py`
 
 ---
 
 ## HIGH — Correctness Issues
 
-### 6. `processed_jobs` loads previous state inconsistently
+### 6. ~~`processed_jobs` loads previous state inconsistently~~ FIXED
 
-**File:** `openpool_management/assets/events.py:154-161`
+**Status:** FIXED — `processed_jobs` now uses `context.resources.io_manager.load_previous_output(context)` instead of the fragile `get_latest_materialization_event()` + `load_input(context)` chain. The `load_previous_output` method handles file-not-found and corruption gracefully.
 
-For AI jobs, `processed_jobs` tries to load its own previous output to recover `pending_jobs`. It uses `context.instance.get_latest_materialization_event()` to check existence, then `context.resources.io_manager.load_input(context)` — passing the *output execution context* as an *input context*. This is semantically wrong. The asset execution context is not an `InputContext`.
-
-It works only because the IO manager reads just `.asset_key` and `.partition_key` from whatever object it receives. If Dagster tightens this API or adds type checks, this breaks.
-
-**Impact:** Potential loss of pending AI job correlation state, leading to AI `job-processed` events missing their ETH addresses (unpayable jobs).
-
-**Fix:** Same as #5 — use a proper self-dependency or a dedicated helper for loading previous state.
+**File:** `openpool_management/assets/events.py`
 
 ---
 
@@ -307,8 +289,8 @@ These files are also never read back by any part of the pipeline — they are wr
 | **Critical** | 2 | FIXED | Cursor advances before run succeeds |
 | **Critical** | 3 | FIXED | `worker_fees` event deduplication |
 | **Critical** | 4 | FIXED | Payment idempotency (WAL) |
-| **Critical** | 5 | OPEN | Fragile `InputContext` self-loading |
-| **High** | 6 | OPEN | `processed_jobs` inconsistent state loading |
+| **Critical** | 5 | FIXED | Fragile `InputContext` self-loading |
+| **High** | 6 | FIXED | `processed_jobs` inconsistent state loading |
 | **High** | 7 | FIXED | `pd.DataFrame()` NameError in IO manager |
 | **High** | 8 | PARTIAL | Payment sensor hardcoded path (env var fixed, still direct file read) |
 | **High** | 9 | OPEN | `worker_connections` discards disconnected workers |
@@ -327,12 +309,11 @@ These files are also never read back by any part of the pipeline — they are wr
 | **Low** | 22 | FIXED | Duplicate `os.makedirs` |
 | **New** | 23 | FIXED | S3 archival on success |
 
-### Progress: 9 FIXED, 1 PARTIAL, 13 OPEN
+### Progress: 11 FIXED, 1 PARTIAL, 11 OPEN
 
 ### Recommended Next Fixes
 
-1. **#5/#6** — Fragile `InputContext` self-loading (CRITICAL/HIGH — silent state loss across 5 assets)
-2. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
-3. **#9** — Keep disconnected workers in state (HIGH — data continuity)
-4. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
-5. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, now affects both `worker_fees` and `worker_performance_analytics`)
+1. **#15** — RPC retry/backoff (MEDIUM — transient failures become permanent; WAL mitigates but doesn't prevent)
+2. **#9** — Keep disconnected workers in state (HIGH — data continuity)
+3. **#10** — Extract `VALID_COMBINATIONS` constant (HIGH — maintenance hygiene, quick fix)
+4. **#14** — Bound `processed_event_ids` growth (MEDIUM — ticking time bomb, now affects both `worker_fees` and `worker_performance_analytics`)
