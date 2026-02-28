@@ -1,9 +1,10 @@
 # openpool_management/sensors.py
-from dagster import sensor, RunRequest, SkipReason, SensorEvaluationContext, RunsFilter, DagsterRunStatus
+from dagster import sensor, run_status_sensor, RunRequest, SkipReason, SensorEvaluationContext, RunStatusSensorContext, RunsFilter, DagsterRunStatus
 import json
 import os
 from datetime import datetime
 
+from openpool_management.jobs import process_inbound_events_job, worker_payment_job, worker_summary_job
 from openpool_management.partitions import VALID_COMBINATIONS
 
 _S3_SENSOR_INTERVAL = int(os.environ.get("S3_SENSOR_INTERVAL_SECONDS", "300"))
@@ -358,3 +359,47 @@ def worker_payment_sensor(context: SensorEvaluationContext):
             "partition": partition_key
         }
     ) for partition_key, workers_due in workers_due_by_partition.items()]
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    monitored_jobs=[worker_payment_job],
+    request_job=worker_summary_job,
+)
+def post_payment_summary_sensor(context: RunStatusSensorContext):
+    """Trigger worker summary export after a successful payment run."""
+    partition_key = context.dagster_run.tags.get("dagster/partition")
+    if not partition_key:
+        return
+
+    return RunRequest(
+        run_key=f"post_payment_summary_{partition_key}_{context.dagster_run.run_id[:8]}",
+        partition_key=partition_key,
+        tags={
+            "source": "post_payment_summary_sensor",
+            "triggered_by_run": context.dagster_run.run_id,
+            "partition": partition_key,
+        }
+    )
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    monitored_jobs=[process_inbound_events_job],
+    request_job=worker_summary_job,
+)
+def post_processing_summary_sensor(context: RunStatusSensorContext):
+    """Trigger worker summary export after successful event processing."""
+    partition_key = context.dagster_run.tags.get("dagster/partition")
+    if not partition_key:
+        return
+
+    return RunRequest(
+        run_key=f"post_processing_summary_{partition_key}_{context.dagster_run.run_id[:8]}",
+        partition_key=partition_key,
+        tags={
+            "source": "post_processing_summary_sensor",
+            "triggered_by_run": context.dagster_run.run_id,
+            "partition": partition_key,
+        }
+    )
