@@ -1,4 +1,8 @@
+import os
+
 from dagster import AssetKey, define_asset_job, AssetSelection
+
+_MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT_PROCESSES", "5"))
 
 # -------------------- Jobs --------------------
 # Define the main job that runs the whole pipeline (excludes payments and payment-dependent assets)
@@ -11,7 +15,7 @@ process_inbound_events_job = define_asset_job(
         - AssetSelection.keys(AssetKey(["export", "worker_summary_s3"]))
     ),
     description="Process OpenPool events (excludes payments and payment-dependent analytics)",
-    config={"execution": {"config": {"multiprocess": {"max_concurrent": 5}}}}
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": _MAX_CONCURRENT}}}}
 )
 
 # Define the worker payment job

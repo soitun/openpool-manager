@@ -1,14 +1,19 @@
 # openpool_management/sensors.py
-from dagster import sensor, RunRequest, SkipReason, SensorEvaluationContext, RunsFilter, DagsterRunStatus
+from dagster import sensor, run_status_sensor, RunRequest, SkipReason, SensorEvaluationContext, RunStatusSensorContext, RunsFilter, DagsterRunStatus
 import json
+import os
 from datetime import datetime
 
+from openpool_management.jobs import process_inbound_events_job, worker_payment_job, worker_summary_job
 from openpool_management.partitions import VALID_COMBINATIONS
+
+_S3_SENSOR_INTERVAL = int(os.environ.get("S3_SENSOR_INTERVAL_SECONDS", "300"))
+_PAYMENT_SENSOR_INTERVAL = int(os.environ.get("PAYMENT_SENSOR_INTERVAL_SECONDS", "14400"))
 
 
 @sensor(
     job_name="process_inbound_events",
-    minimum_interval_seconds=300,
+    minimum_interval_seconds=_S3_SENSOR_INTERVAL,
     required_resource_keys={"s3"}
 )
 def s3_event_sensor(context: SensorEvaluationContext):
@@ -25,7 +30,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
     instance = context.instance
 
     # Configure batch size
-    max_files_per_batch = 250
+    max_files_per_batch = int(os.environ.get("MAX_FILES_PER_BATCH", "250"))
 
     # Load cursor data (two-phase format)
     cursor_data = {}
@@ -261,7 +266,7 @@ def s3_event_sensor(context: SensorEvaluationContext):
 
 @sensor(
     job_name="worker_payment_job",
-    minimum_interval_seconds=14400,
+    minimum_interval_seconds=_PAYMENT_SENSOR_INTERVAL,
     required_resource_keys={"payment_processor", "io_manager"}
 )
 def worker_payment_sensor(context: SensorEvaluationContext):
@@ -283,7 +288,7 @@ def worker_payment_sensor(context: SensorEvaluationContext):
     if active_payment_partitions:
         context.log.info(f"Active payment partitions: {active_payment_partitions}")
 
-    # Check worker payment states via IO manager
+    # Check worker fee states (source of truth) and payment states (what's been paid)
     workers_due_by_partition = {}
     io_mgr = context.resources.io_manager
 
@@ -298,28 +303,46 @@ def worker_payment_sensor(context: SensorEvaluationContext):
         context.log.info(f"Checking payment eligibility for {partition_key}")
 
         try:
+            # Load worker_fees — the source of truth for accumulated earnings
+            fees_data = io_mgr.load_for_sensor(
+                asset_key_path=["worker", "worker_fees"],
+                partition_key=partition_key
+            )
+
+            if not fees_data or not isinstance(fees_data, dict) or "worker_states" not in fees_data:
+                context.log.info(f"No worker_fees data for {partition_key}, skipping")
+                continue
+
+            fee_states = fees_data["worker_states"]
+
+            # Load worker_payments — tracks what's already been paid (may not exist yet)
             payment_data = io_mgr.load_for_sensor(
                 asset_key_path=["worker", "worker_payments"],
                 partition_key=partition_key
             )
-
+            payment_states = {}
             if payment_data and isinstance(payment_data, dict) and "payment_states" in payment_data:
                 payment_states = payment_data["payment_states"]
-                workers_due = []
 
-                for eth_address, state in payment_states.items():
-                    unpaid_fees = state.get("unpaid_fees", 0)
-                    if unpaid_fees >= payment_threshold_wei:
-                        workers_due.append({
-                            "eth_address": eth_address,
-                            "pending_fees": unpaid_fees,
-                            "pending_eth": unpaid_fees / 1e18
-                        })
+            # Calculate unpaid fees: worker_earnings (from fees) - total_fees_paid (from payments)
+            workers_due = []
+            for eth_address, fee_state in fee_states.items():
+                worker_earnings = fee_state.get("worker_earnings", 0)
+                total_paid = payment_states.get(eth_address, {}).get("total_fees_paid", 0)
+                unpaid_fees = worker_earnings - total_paid
 
-                if workers_due:
-                    workers_due_by_partition[partition_key] = workers_due
-                    context.log.info(
-                        f"Found {len(workers_due)} workers due for payment totaling {sum(w['pending_eth'] for w in workers_due):.6f} ETH")
+                if unpaid_fees >= payment_threshold_wei:
+                    workers_due.append({
+                        "eth_address": eth_address,
+                        "pending_fees": unpaid_fees,
+                        "pending_eth": unpaid_fees / 1e18
+                    })
+
+            if workers_due:
+                workers_due_by_partition[partition_key] = workers_due
+                context.log.info(
+                    f"Found {len(workers_due)} workers due for payment totaling "
+                    f"{sum(w['pending_eth'] for w in workers_due):.6f} ETH")
         except Exception as e:
             context.log.error(f"Error checking {partition_key}: {str(e)}")
 
@@ -336,3 +359,47 @@ def worker_payment_sensor(context: SensorEvaluationContext):
             "partition": partition_key
         }
     ) for partition_key, workers_due in workers_due_by_partition.items()]
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    monitored_jobs=[worker_payment_job],
+    request_job=worker_summary_job,
+)
+def post_payment_summary_sensor(context: RunStatusSensorContext):
+    """Trigger worker summary export after a successful payment run."""
+    partition_key = context.dagster_run.tags.get("dagster/partition")
+    if not partition_key:
+        return
+
+    return RunRequest(
+        run_key=f"post_payment_summary_{partition_key}_{context.dagster_run.run_id[:8]}",
+        partition_key=partition_key,
+        tags={
+            "source": "post_payment_summary_sensor",
+            "triggered_by_run": context.dagster_run.run_id,
+            "partition": partition_key,
+        }
+    )
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    monitored_jobs=[process_inbound_events_job],
+    request_job=worker_summary_job,
+)
+def post_processing_summary_sensor(context: RunStatusSensorContext):
+    """Trigger worker summary export after successful event processing."""
+    partition_key = context.dagster_run.tags.get("dagster/partition")
+    if not partition_key:
+        return
+
+    return RunRequest(
+        run_key=f"post_processing_summary_{partition_key}_{context.dagster_run.run_id[:8]}",
+        partition_key=partition_key,
+        tags={
+            "source": "post_processing_summary_sensor",
+            "triggered_by_run": context.dagster_run.run_id,
+            "partition": partition_key,
+        }
+    )

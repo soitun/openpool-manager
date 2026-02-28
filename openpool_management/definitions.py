@@ -15,7 +15,7 @@ from openpool_management.io_manager import partitioned_filesystem_io_manager
 from openpool_management.jobs import process_inbound_events_job, worker_performance_job, worker_payment_job, \
     worker_summary_job
 from openpool_management.resources import S3Resource, PaymentResource, PoolResource
-from openpool_management.sensors import s3_event_sensor, worker_payment_sensor
+from openpool_management.sensors import s3_event_sensor, worker_payment_sensor, post_payment_summary_sensor, post_processing_summary_sensor
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,7 +40,7 @@ defs = Definitions(
         worker_summary_job,
         worker_performance_job,
     ],
-    sensors=[s3_event_sensor,worker_payment_sensor],
+    sensors=[s3_event_sensor, worker_payment_sensor, post_payment_summary_sensor, post_processing_summary_sensor],
     resources={
         "io_manager": partitioned_filesystem_io_manager,
         "s3": S3Resource(
