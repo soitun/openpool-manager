@@ -106,10 +106,11 @@ def worker_performance_analytics(context, processed_jobs: dict):
     # Prune recent_event_ids to only keep IDs within the overlap window
     if new_high_water_mark:
         overlap_cutoff = new_high_water_mark - _DEDUP_OVERLAP
-        recent_event_ids = {
-            eid for eid in recent_event_ids
-            if any(e.id == eid and e.dt > overlap_cutoff for e in processed_events)
-        } | {e.id for e in new_events if e.dt > overlap_cutoff}
+        batch_ids_in_window = {e.id for e in processed_events if e.dt > overlap_cutoff}
+        recent_event_ids = (
+            (recent_event_ids & batch_ids_in_window)
+            | {e.id for e in new_events if e.dt > overlap_cutoff}
+        )
 
     # Process based on node type
     if node_type == "transcode":
